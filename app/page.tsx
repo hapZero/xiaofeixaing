@@ -601,11 +601,13 @@ function CanvasWorkspace({
   onClose,
   onContinue,
   continueLabel,
+  projectId = null,
 }: {
   title: string;
   onClose: () => void;
   onContinue: () => void;
   continueLabel: string;
+  projectId?: string | null;
 }) {
   const [nodes, setNodes] = useState(initialFlowNodes);
   const [edges, setEdges] = useState(initialFlowEdges);
@@ -613,8 +615,51 @@ function CanvasWorkspace({
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [zoom, setZoom] = useState(82);
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const [saveState, setSaveState] = useState<"本地草稿" | "正在载入" | "已自动保存" | "保存中" | "保存失败">(projectId ? "正在载入" : "本地草稿");
   const dragRef = useRef<{ id: string; dx: number; dy: number; parent: HTMLElement } | null>(null);
   const selectedNode = nodes.find((node) => node.id === selected) ?? nodes[0];
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    fetch(`/api/projects/${projectId}/canvas`, { cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("LOAD_FAILED")))
+      .then((data: { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> }) => {
+        if (cancelled) return;
+        if (data.nodes?.length) {
+          setNodes(data.nodes.map((item) => ({
+            id: String(item.id),
+            kind: String(item.nodeType) as FlowNode["kind"],
+            title: String(item.title),
+            meta: String((item.content as { meta?: unknown } | undefined)?.meta ?? ""),
+            image: typeof (item.content as { image?: unknown } | undefined)?.image === "string" ? String((item.content as { image?: unknown }).image) : undefined,
+            x: Number(item.x), y: Number(item.y), width: Number(item.width), height: Number(item.height),
+          })));
+          setEdges((data.edges ?? []).map((item) => ({ id: String(item.id), from: String(item.fromNodeId), to: String(item.toNodeId), label: String(item.label ?? "内容关联") })));
+        }
+        setPersistenceReady(true);
+        setSaveState("已自动保存");
+      })
+      .catch(() => { if (!cancelled) setSaveState("保存失败"); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !persistenceReady) return;
+    const timer = window.setTimeout(() => {
+      setSaveState("保存中");
+      fetch(`/api/projects/${projectId}/canvas`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          nodes: nodes.map((node) => ({ id: node.id, nodeType: node.kind, title: node.title, content: { meta: node.meta, image: node.image }, x: node.x, y: node.y, width: node.width, height: node.height })),
+          edges: edges.map((edge) => ({ id: edge.id, fromNodeId: edge.from, toNodeId: edge.to, label: edge.label, edgeType: "reference" })),
+        }),
+      }).then((response) => { if (!response.ok) throw new Error("SAVE_FAILED"); setSaveState("已自动保存"); }).catch(() => setSaveState("保存失败"));
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [edges, nodes, persistenceReady, projectId]);
 
   const addNode = (kind: FlowNode["kind"]) => {
     const count = nodes.filter((node) => node.kind === kind).length + 1;
@@ -675,7 +720,7 @@ function CanvasWorkspace({
   return (
     <div className="flow-workspace">
       <header className="flow-topbar">
-        <div className="flow-title"><button onClick={onClose} aria-label="返回">←</button><Logo /><span>/</span><div><b>{title}</b><small>画布自动保存 · 刚刚</small></div></div>
+        <div className="flow-title"><button onClick={onClose} aria-label="返回">←</button><Logo /><span>/</span><div><b>{title}</b><small>{saveState}{saveState === "已自动保存" ? " · 刚刚" : ""}</small></div></div>
         <div className="flow-top-actions"><button className="flow-collaborator"><i>Z</i> 仅自己</button><button>↶</button><button>↷</button><AppButton primary onClick={onContinue}>{continueLabel}</AppButton></div>
       </header>
       <div className="flow-body">
@@ -738,7 +783,24 @@ function CanvasOverlay({ onClose, onContinue }: { onClose: () => void; onContinu
 }
 
 function FreeCanvasPage({ onNavigate }: { onNavigate: (view: View) => void }) {
-  return <CanvasWorkspace title="自由画布 · 校园悬疑灵感" onClose={() => onNavigate("home")} onContinue={() => onNavigate("drama")} continueLabel="整理为短剧项目 →" />;
+  const [projectId, setProjectId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const ensureProject = async () => {
+      const listResponse = await fetch("/api/projects", { cache: "no-store" });
+      if (!listResponse.ok) return;
+      const list = await listResponse.json() as { projects?: Array<{ id: string; sourceType: string; title: string }> };
+      const existing = list.projects?.find((project) => project.sourceType === "canvas" && project.title === "校园悬疑灵感");
+      if (existing) { if (!cancelled) setProjectId(existing.id); return; }
+      const createResponse = await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "校园悬疑灵感", sourceType: "canvas", synopsis: "旧教室里，一封迟到十七年的信让两个人再次相遇。" }) });
+      if (!createResponse.ok) return;
+      const created = await createResponse.json() as { project?: { id: string } };
+      if (!cancelled && created.project?.id) setProjectId(created.project.id);
+    };
+    ensureProject().catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  return <CanvasWorkspace title="自由画布 · 校园悬疑灵感" projectId={projectId} onClose={() => onNavigate("home")} onContinue={() => onNavigate("drama")} continueLabel="整理为短剧项目 →" />;
 }
 
 function VideosPage({ onNavigate }: { onNavigate: (view: View) => void }) {

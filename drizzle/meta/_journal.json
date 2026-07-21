@@ -1,5 +1,13 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1784622469140,
+      "tag": "0000_gifted_vanisher",
+      "breakpoints": true
+    }
+  ]
 }

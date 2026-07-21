@@ -1,0 +1,62 @@
+import { boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+
+export const projectSourceType = pgEnum("project_source_type", ["upload", "ai_script", "canvas"]);
+export const projectStatus = pgEnum("project_status", ["draft", "scripting", "assets", "storyboarding", "rendering", "completed", "failed"]);
+export const generationStatus = pgEnum("generation_status", ["waiting", "active", "succeeded", "failed", "cancelled"]);
+
+export const users = pgTable("users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  phone: text("phone").notNull(),
+  displayName: text("display_name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("users_phone_uidx").on(table.phone)]);
+
+export const projects = pgTable("projects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  sourceType: projectSourceType("source_type").notNull(),
+  status: projectStatus("status").notNull().default("draft"),
+  stylePreset: text("style_preset").notNull().default("写实电影风格"),
+  aspectRatio: text("aspect_ratio").notNull().default("16:9"),
+  synopsis: text("synopsis"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("projects_owner_updated_idx").on(table.ownerId, table.updatedAt)]);
+
+export const generationJobs = pgTable("generation_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  capability: text("capability").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: uuid("entity_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  status: generationStatus("status").notNull().default("waiting"),
+  progress: integer("progress").notNull().default(0),
+  payload: jsonb("payload").notNull(),
+  result: jsonb("result"),
+  error: jsonb("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("generation_jobs_idempotency_uidx").on(table.ownerId, table.idempotencyKey),
+  index("generation_jobs_project_created_idx").on(table.projectId, table.createdAt),
+]);
+
+export const workflowBindings = pgTable("workflow_bindings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  capability: text("capability").notNull(),
+  name: text("name").notNull(),
+  workflowStorageKey: text("workflow_storage_key").notNull(),
+  inputMapping: jsonb("input_mapping").notNull().default({}),
+  outputMapping: jsonb("output_mapping").notNull().default({}),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("workflow_bindings_owner_capability_name_uidx").on(table.ownerId, table.capability, table.name),
+  index("workflow_bindings_capability_enabled_idx").on(table.capability, table.enabled),
+]);

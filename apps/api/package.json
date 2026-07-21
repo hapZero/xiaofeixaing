@@ -1,0 +1,27 @@
+{
+  "name": "@xiaofeixiang/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch --ignore ../../node_modules src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.1.28",
+    "@nestjs/core": "11.1.28",
+    "@nestjs/platform-express": "11.1.28",
+    "@xiaofeixiang/config": "*",
+    "@xiaofeixiang/contracts": "*",
+    "@xiaofeixiang/database": "*",
+    "@xiaofeixiang/queue": "*",
+    "bullmq": "5.80.9",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.14.2",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": { "tsx": "4.20.5" }
+}

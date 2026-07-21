@@ -1,98 +1,50 @@
-# vinext-starter
+# 小飞象
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+面向单人创作者的 AI 短剧生产平台。前台组织剧本、资产、分镜、声音与成片，Spark 上的 ComfyUI 作为隐藏执行层。
 
-## Prerequisites
+## 工程结构
 
-- Node.js `>=22.13.0`
+```text
+app/                       Web 产品（React/TypeScript，当前 Sites 部署入口）
+apps/api/                  NestJS 业务 API
+apps/worker/               BullMQ 生成任务 Worker
+packages/config/           环境配置读取与校验
+packages/contracts/        跨进程命令、事件与 API 契约
+packages/domain/           纯领域模型与业务规则
+packages/database/         PostgreSQL/Drizzle 数据层
+packages/queue/            Redis/BullMQ 队列适配器
+packages/storage/          S3 兼容对象存储适配器
+packages/comfyui-client/   Spark/ComfyUI API 客户端
+infra/docker/              本地 PostgreSQL、Redis、MinIO
+infra/postgres/migrations/ PostgreSQL 迁移
+docs/                      产品开发计划与架构说明
+```
 
-## Quick Start
+Web 暂时保留在仓库根目录，是为了保持已经可看的 Sites 原型持续可部署；业务后端已经按 monorepo 工作区隔离。Web 部署链路迁移完成后再做纯物理目录移动，不改变模块边界。
+
+## 本地启动
 
 ```bash
 npm install
+npm run infra:up
+npm run db:migrate:platform
+cp .env.platform.example .env.platform.local
+```
+
+在不同终端按示例环境变量启动：
+
+```bash
 npm run dev
-npm run build
+DATABASE_URL=postgresql://xiaofeixiang:xiaofeixiang_local@localhost:5432/xiaofeixiang REDIS_URL=redis://localhost:6379 npm run dev:api
+REDIS_URL=redis://localhost:6379 COMFYUI_URL=http://spark-host:8188 npm run dev:worker
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 质量检查
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+npm run typecheck:platform
+npm run lint
+npm test
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+详细边界见 [docs/architecture.md](docs/architecture.md)，开发顺序见 [docs/development-plan.md](docs/development-plan.md)。

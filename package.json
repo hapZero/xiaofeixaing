@@ -2,6 +2,10 @@
   "name": "xiaofeixiang-studio",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "engines": {
     "node": ">=22.13.0"
   },
@@ -9,10 +13,18 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test": "npm run build && npm run build:platform && node --test tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern '**/dist/**' --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.local.jsonc --persist-to .wrangler/state"
+    "db:generate:platform": "drizzle-kit generate --config drizzle.platform.config.ts",
+    "db:migrate:platform": "drizzle-kit migrate --config drizzle.platform.config.ts",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.local.jsonc --persist-to .wrangler/state",
+    "infra:up": "docker compose -f infra/docker/compose.yml up -d --wait",
+    "build:packages": "npm run build --workspace @xiaofeixiang/config && npm run build --workspace @xiaofeixiang/contracts && npm run build --workspace @xiaofeixiang/domain && npm run build --workspace @xiaofeixiang/database && npm run build --workspace @xiaofeixiang/queue && npm run build --workspace @xiaofeixiang/storage && npm run build --workspace @xiaofeixiang/comfyui-client",
+    "build:platform": "npm run build:packages && npm run build --workspace @xiaofeixiang/api && npm run build --workspace @xiaofeixiang/worker",
+    "typecheck:platform": "npm run typecheck --workspaces --if-present",
+    "dev:api": "npm run dev --workspace @xiaofeixiang/api",
+    "dev:worker": "npm run dev --workspace @xiaofeixiang/worker"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

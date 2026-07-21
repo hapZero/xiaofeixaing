@@ -69,9 +69,11 @@
 
 ## 当前开发位置
 
-- 已完成：产品原型、领域数据初稿、项目/画布接口、ComfyUI 能力接口和自由画布持久化验证。
-- 正在进行：拆分原型前端，建立清晰的 feature/component 边界。
-- 紧接着执行：建立 NestJS API、PostgreSQL、Redis/BullMQ 和 Worker 的 monorepo 基础设施。
+- 已完成：产品原型、前端 feature/component 拆分、自由画布交互与持久化验证。
+- 已完成：monorepo 工作区、NestJS API、BullMQ Worker、共享契约/领域/配置包和 ComfyUI 客户端。
+- 已完成：PostgreSQL 迁移、Redis 队列、S3 适配器、本地 PostgreSQL/Redis/MinIO 运行环境。
+- 已验证：API 提交任务 → Redis/BullMQ → Worker → ComfyUI `/prompt` → 幂等完成状态。
+- 正在进行：手机号账户与项目纵向闭环，并将任务记录正式写入 PostgreSQL。
 - 当前 D1/R2 版本只作为在线原型和接口验证环境，不作为商用最终数据底座。
 
 ## 代码约束

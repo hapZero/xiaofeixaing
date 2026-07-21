@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "../../../../../../db";
 import { workflowBindings, workflowTestRuns } from "../../../../../../db/schema";
 import { applyWorkflowInputs, loadWorkflow, queueWorkflow, uploadWorkflowInput } from "../../../../../lib/server/comfyui";
@@ -7,6 +7,33 @@ import { getRequestUser } from "../../../../../lib/server/request-user";
 import { getWorkflowCapability } from "../../../../../lib/workflow-capabilities";
 
 type RouteContext = { params: Promise<{ bindingId: string }> };
+
+function publicTestRun(run: typeof workflowTestRuns.$inferSelect) {
+  return {
+    id: run.id,
+    status: run.status,
+    errorMessage: run.errorMessage,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    finishedAt: run.finishedAt,
+    inputSummary: JSON.parse(run.inputSummaryJson) as Record<string, unknown>,
+    result: run.resultJson ? JSON.parse(run.resultJson) as Record<string, unknown> : null,
+  };
+}
+
+export async function GET(request: Request, context: RouteContext) {
+  const user = await getRequestUser(request);
+  if (!user) return errorResponse(401, "AUTH_REQUIRED", "请先登录小飞象");
+  const { bindingId } = await context.params;
+  const db = getDb();
+  const binding = (await db.select({ id: workflowBindings.id }).from(workflowBindings).where(and(eq(workflowBindings.id, bindingId), eq(workflowBindings.ownerId, user.id))).limit(1))[0];
+  if (!binding) return errorResponse(404, "WORKFLOW_NOT_FOUND", "工作流绑定不存在");
+  const runs = await db.select().from(workflowTestRuns)
+    .where(and(eq(workflowTestRuns.workflowBindingId, bindingId), eq(workflowTestRuns.ownerId, user.id)))
+    .orderBy(desc(workflowTestRuns.createdAt))
+    .limit(10);
+  return json({ runs: runs.map(publicTestRun) });
+}
 
 export async function POST(request: Request, context: RouteContext) {
   const user = await getRequestUser(request);

@@ -145,11 +145,15 @@ test("runs bound image-to-video workflows from tests and storyboard shots", asyn
   ]);
   assert.match(testRoute, /uploadWorkflowInput/);
   assert.match(testRoute, /queueWorkflow/);
+  assert.match(testRoute, /orderBy\(desc\(workflowTestRuns\.createdAt\)\)/);
   assert.match(testStatusRoute, /selectWorkflowOutput/);
   assert.match(testOutputRoute, /downloadWorkflowOutput/);
   assert.match(jobsRoute, /firstFrameAssetId/);
   assert.match(jobsRoute, /uploadWorkflowInput/);
   assert.match(editor, /生成分镜视频/);
-  assert.match(workflowCenter, /5\. 测试运行/);
+  assert.match(workflowCenter, /执行版已保存并启用/);
+  assert.match(workflowCenter, /立即测试已绑定工作流/);
+  assert.match(workflowCenter, /aria-live="polite"/);
+  assert.match(workflowCenter, /testProgress/);
   assert.match(migration, /CREATE TABLE `workflow_test_runs`/);
 });

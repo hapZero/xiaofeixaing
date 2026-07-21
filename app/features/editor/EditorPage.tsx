@@ -20,11 +20,14 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
   const [prompt, setPrompt] = useState("");
   const [saveState, setSaveState] = useState<"已保存" | "保存中" | "保存失败">("已保存");
   const [generationState, setGenerationState] = useState("");
+  const [generationJobId, setGenerationJobId] = useState<string | null>(null);
+  const [generationResultUrl, setGenerationResultUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(initialProject));
   const projectId = initialProject?.id ?? null;
   const shots = useMemo(() => [...(detail?.shots ?? [])].sort((a, b) => a.sequence - b.sequence), [detail]);
   const selectedShot = shots[segment] ?? null;
   const selectedEpisode = detail?.episodes.find((episode) => episode.id === selectedShot?.episodeId) ?? detail?.episodes[0] ?? null;
+  const selectedFrameAsset = detail?.assets.find((asset) => asset.id === selectedShot?.firstFrameAssetId) ?? null;
 
   useEffect(() => {
     if (!projectId) return;
@@ -47,6 +50,33 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
   }, [projectId]);
 
   useEffect(() => {
+    if (!generationJobId || !projectId) return;
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      const response = await fetch(`/api/generation/jobs/${generationJobId}`, { cache: "no-store" });
+      const data = await response.json() as { job?: { status: string; errorMessage?: string; result?: { assetUrl?: string } } };
+      if (cancelled || !data.job) return;
+      if (["queued", "running", "submitting"].includes(data.job.status)) {
+        setGenerationState(data.job.status === "running" ? "ComfyUI 正在生成分镜首帧…" : "任务正在等待 Spark 执行…");
+        timer = window.setTimeout(poll, 1600);
+        return;
+      }
+      setGenerationJobId(null);
+      if (data.job.status === "succeeded") {
+        setGenerationResultUrl(data.job.result?.assetUrl ?? null);
+        setGenerationState("首帧已生成并归档到当前分镜");
+        const detailResponse = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
+        if (detailResponse.ok && !cancelled) setDetail(await detailResponse.json() as EditorDetail);
+      } else {
+        setGenerationState(`生成失败：${data.job.errorMessage ?? "请检查工作流输出映射"}`);
+      }
+    };
+    timer = window.setTimeout(poll, 900);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [generationJobId, projectId]);
+
+  useEffect(() => {
     if (!projectId || !selectedShot || prompt === selectedShot.prompt) return;
     const timer = window.setTimeout(async () => {
       try {
@@ -67,6 +97,8 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
     setPrompt(shots[index]?.prompt ?? "");
     setSaveState("已保存");
     setGenerationState("");
+    setGenerationJobId(null);
+    setGenerationResultUrl(null);
   };
 
   const submitGeneration = async () => {
@@ -88,13 +120,15 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
       setGenerationState(data.error?.message ?? "首帧任务提交失败");
       return;
     }
-    setGenerationState(`任务已排队：${data.job?.id ?? "等待执行"}`);
+    if (data.job?.id) setGenerationJobId(data.job.id);
+    setGenerationState("任务已排队，正在等待 Spark 执行…");
   };
 
   const referencedCharacters = detail?.characters.filter((character) => prompt.includes(character.canonicalName)) ?? [];
   const sceneAssets = detail?.assets.filter((asset) => asset.assetType === "scene") ?? [];
   const referencedScenes = sceneAssets.filter((asset) => prompt.includes(asset.name));
   const environmentPreset = detail?.audioPresets.find((preset) => preset.id === selectedShot?.environmentPresetId) ?? null;
+  const displayFrameUrl = generationResultUrl ?? selectedFrameAsset?.thumbnailUrl ?? null;
 
   if (!initialProject) {
     return <div className="editor-page"><div className="missing-project"><b>还没有选择短剧项目</b><p>请先从分集视频页面进入分镜编辑器。</p><AppButton primary onClick={() => onNavigate("drama")}>返回我的短剧</AppButton></div></div>;
@@ -120,11 +154,11 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
               <div className="storyboard-heading"><div><p className="eyebrow">当前分镜</p><h2>分镜 {String(segment + 1).padStart(2, "0")} · {selectedShot.title}</h2></div><div className="credit-note">预计 {Math.round(selectedShot.durationMs / 1_000)} 秒</div></div>
               <div className="referenced-assets"><span>自动引用</span>{referencedScenes.map((asset, index) => <button key={asset.id}><i style={{ backgroundImage: `url(${sceneImages[index % sceneImages.length]})` }} />{asset.name}</button>)}{referencedCharacters.map((character, index) => <button key={character.id}><i style={{ backgroundImage: `url(${roleImages[index % roleImages.length]})` }} />{character.canonicalName}</button>)}{!referencedScenes.length && !referencedCharacters.length && <small>当前描述尚未匹配项目资产名称</small>}</div>
               <div className="shot-script dynamic-shot-editor"><label>分镜描述<textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setSaveState("保存中"); }} /></label><div className="shot-editor-meta"><span>{prompt.length} 字</span><span>{environmentPreset ? `声音场：${environmentPreset.name}` : "尚未继承场景声音场"}</span></div></div>
-              <div className="storyboard-actions"><AppButton disabled={saveState === "保存中"}>保存状态：{saveState}</AppButton><AppButton primary onClick={submitGeneration}>生成分镜首帧</AppButton></div>
+              <div className="storyboard-actions"><AppButton disabled={saveState === "保存中"}>保存状态：{saveState}</AppButton><AppButton primary disabled={Boolean(generationJobId)} onClick={submitGeneration}>{generationJobId ? "正在生成…" : selectedShot.firstFrameAssetId ? "重新生成首帧" : "生成分镜首帧"}</AppButton></div>
               {generationState && <div className={`generation-state ${generationState.includes("需要先配置") ? "needs-config" : ""}`}>{generationState}</div>}
             </main>
             <aside className="video-preview-panel">
-              <div className="video-stage awaiting-generation" style={{ backgroundImage: `url(${videoImages[segment % videoImages.length]})` }}><div className="awaiting-label"><b>{selectedShot.firstFrameAssetId ? "首帧已生成" : "等待生成首帧"}</b><span>{selectedShot.status}</span></div><div className="video-stage-top"><Pill dark>分镜 {String(segment + 1).padStart(2, "0")}</Pill></div></div>
+              <div className={`video-stage ${displayFrameUrl ? "generated-frame" : "awaiting-generation"}`} style={{ backgroundImage: `url(${displayFrameUrl ?? videoImages[segment % videoImages.length]})` }}>{!displayFrameUrl && <div className="awaiting-label"><b>{generationJobId ? "正在生成首帧" : "等待生成首帧"}</b><span>{selectedShot.status}</span></div>}<div className="video-stage-top"><Pill dark>分镜 {String(segment + 1).padStart(2, "0")}</Pill></div></div>
               <div className="preview-tools"><button disabled>▧<span>原视频</span></button><button disabled>◇<span>提升画质</span></button><button disabled>⌁<span>擦除字幕</span></button><button disabled>⇩<span>下载</span></button></div>
               <div className="sound-continuity"><div><span>≈</span><div><b>声音连续性</b><p>{environmentPreset?.description ?? "该分镜尚未匹配场景环境音"}</p></div></div><i>{environmentPreset?.locked ? "已锁定" : "待配置"}</i></div>
             </aside>

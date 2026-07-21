@@ -7,7 +7,32 @@ export type View =
   | "videos"
   | "editor"
   | "canvas"
+  | "workflows"
   | "globalAssets";
+
+export type WorkflowInputDefinition = {
+  key: string;
+  label: string;
+  required: boolean;
+  valueType: "text" | "number" | "image" | "video" | "audio" | "json";
+};
+
+export type WorkflowOutputDefinition = {
+  key: string;
+  label: string;
+  mediaType: "image" | "video" | "audio" | "json";
+};
+
+export type WorkflowCapabilityInfo = {
+  key: string;
+  name: string;
+  requirement: string;
+  inputs: readonly WorkflowInputDefinition[];
+  outputs: readonly WorkflowOutputDefinition[];
+  configured: boolean;
+  bindingName: string | null;
+  bindingId: string | null;
+};
 
 export type StudioUser = {
   id: string;

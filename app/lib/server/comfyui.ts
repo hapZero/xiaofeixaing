@@ -4,6 +4,9 @@ import { getMediaBucket } from "../../../db";
 type RuntimeEnv = { COMFYUI_BASE_URL?: string; COMFYUI_API_KEY?: string; COMFYUI_CLIENT_ID?: string };
 type InputTarget = { nodeId: string; input: string };
 type WorkflowDocument = Record<string, { inputs?: Record<string, unknown>; [key: string]: unknown }>;
+export type WorkflowInputTarget = { nodeId: string; input: string };
+export type WorkflowOutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json" };
+export type ComfyOutputFile = { filename: string; subfolder?: string; type?: string };
 
 function config() {
   const runtime = env as unknown as RuntimeEnv;
@@ -20,6 +23,15 @@ function headers(apiKey: string): HeadersInit {
 
 export function comfyUiConfigured(): boolean {
   return Boolean(config().baseUrl);
+}
+
+export async function testComfyUiConnection(): Promise<{ connected: boolean; deviceCount: number; system: string | null }> {
+  const { baseUrl, apiKey } = config();
+  if (!baseUrl) return { connected: false, deviceCount: 0, system: null };
+  const response = await fetch(`${baseUrl}/system_stats`, { headers: headers(apiKey), signal: AbortSignal.timeout(8_000) });
+  if (!response.ok) throw new Error(`COMFYUI_CONNECTION_FAILED:${response.status}`);
+  const data = await response.json() as { system?: { os?: string }; devices?: unknown[] };
+  return { connected: true, deviceCount: data.devices?.length ?? 0, system: data.system?.os ?? null };
 }
 
 export async function loadWorkflow(storageKey: string): Promise<WorkflowDocument> {
@@ -63,4 +75,33 @@ export async function getWorkflowHistory(promptId: string): Promise<unknown> {
   const response = await fetch(`${baseUrl}/history/${encodeURIComponent(promptId)}`, { headers: headers(apiKey), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`COMFYUI_HISTORY_FAILED:${response.status}`);
   return response.json();
+}
+
+export function getHistoryRecord(history: unknown, promptId: string): Record<string, unknown> | null {
+  if (!history || typeof history !== "object") return null;
+  const record = (history as Record<string, unknown>)[promptId];
+  return record && typeof record === "object" ? record as Record<string, unknown> : null;
+}
+
+export function historyFailed(record: Record<string, unknown>): boolean {
+  const status = record.status as { status_str?: string; completed?: boolean } | undefined;
+  return status?.status_str === "error";
+}
+
+export function selectWorkflowOutput(record: Record<string, unknown>, contract: WorkflowOutputContract): ComfyOutputFile | null {
+  const outputs = record.outputs as Record<string, Record<string, unknown>> | undefined;
+  const nodeOutput = outputs?.[contract.nodeId];
+  const candidates = nodeOutput?.[contract.output];
+  if (!Array.isArray(candidates)) return null;
+  const first = candidates[0] as Partial<ComfyOutputFile> | undefined;
+  return first?.filename ? { filename: first.filename, subfolder: first.subfolder, type: first.type } : null;
+}
+
+export async function downloadWorkflowOutput(file: ComfyOutputFile): Promise<{ bytes: ArrayBuffer; contentType: string }> {
+  const { baseUrl, apiKey } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  const query = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? "", type: file.type ?? "output" });
+  const response = await fetch(`${baseUrl}/view?${query}`, { headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {}, signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`COMFYUI_OUTPUT_DOWNLOAD_FAILED:${response.status}`);
+  return { bytes: await response.arrayBuffer(), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
 }

@@ -10,6 +10,7 @@ import { EditorPage } from "../editor/EditorPage";
 import { Home } from "../home/Home";
 import { ScriptPage } from "../script/ScriptPage";
 import { VideosPage } from "../videos/VideosPage";
+import { WorkflowCenter } from "../workflows/WorkflowCenter";
 import type { ProjectSummary, StudioUser, View } from "./types";
 
 export function StudioApp() {
@@ -34,5 +35,6 @@ export function StudioApp() {
   if (view === "videos") return <VideosPage onNavigate={setView} project={activeProject} />;
   if (view === "editor") return <EditorPage onNavigate={setView} project={activeProject} />;
   if (view === "canvas") return <FreeCanvasPage onNavigate={setView} project={activeProject?.sourceType === "canvas" ? activeProject : null} />;
+  if (view === "workflows") return <WorkflowCenter onNavigate={setView} />;
   return <GlobalAssets onNavigate={setView} />;
 }

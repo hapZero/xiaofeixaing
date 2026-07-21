@@ -17,6 +17,7 @@ export async function GET(request: Request) {
       ...item,
       configured: Boolean(byCapability.get(item.key)?.enabled),
       bindingName: byCapability.get(item.key)?.name ?? null,
+      bindingId: byCapability.get(item.key)?.id ?? null,
     })),
   });
 }

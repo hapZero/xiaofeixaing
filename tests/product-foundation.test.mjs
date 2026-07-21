@@ -43,7 +43,7 @@ test("defines durable product data and ComfyUI job boundaries", async () => {
     read("../app/api/generation/jobs/route.ts"),
     read("../app/lib/workflow-capabilities.ts"),
   ]);
-  for (const table of ["users", "projects", "episodes", "assets", "characters", "shots", "canvasNodes", "canvasEdges", "workflowBindings", "generationJobs"]) {
+  for (const table of ["users", "projects", "episodes", "assets", "characters", "shots", "canvasNodes", "canvasEdges", "workflowBindings", "generationJobs", "workflowTestRuns"]) {
     assert.match(schema, new RegExp(`export const ${table}`));
   }
   assert.match(migration, /CREATE TABLE `generation_jobs`/);
@@ -131,4 +131,25 @@ test("binds ComfyUI workflows and returns generated files to their shots", async
   assert.match(assetRoute, /getOwnedProject/);
   assert.match(capabilities, /characterImages/);
   assert.match(capabilities, /voiceReference/);
+});
+
+test("runs bound image-to-video workflows from tests and storyboard shots", async () => {
+  const [testRoute, testStatusRoute, testOutputRoute, jobsRoute, editor, workflowCenter, migration] = await Promise.all([
+    read("../app/api/workflows/bindings/[bindingId]/test/route.ts"),
+    read("../app/api/workflows/test-runs/[runId]/route.ts"),
+    read("../app/api/workflows/test-runs/[runId]/output/route.ts"),
+    read("../app/api/generation/jobs/route.ts"),
+    read("../app/features/editor/EditorPage.tsx"),
+    read("../app/features/workflows/WorkflowCenter.tsx"),
+    read("../drizzle/0001_safe_argent.sql"),
+  ]);
+  assert.match(testRoute, /uploadWorkflowInput/);
+  assert.match(testRoute, /queueWorkflow/);
+  assert.match(testStatusRoute, /selectWorkflowOutput/);
+  assert.match(testOutputRoute, /downloadWorkflowOutput/);
+  assert.match(jobsRoute, /firstFrameAssetId/);
+  assert.match(jobsRoute, /uploadWorkflowInput/);
+  assert.match(editor, /生成分镜视频/);
+  assert.match(workflowCenter, /5\. 测试运行/);
+  assert.match(migration, /CREATE TABLE `workflow_test_runs`/);
 });

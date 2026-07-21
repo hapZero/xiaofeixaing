@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
-import { getDb } from "../../../../db";
-import { generationJobs, workflowBindings } from "../../../../db/schema";
-import { applyWorkflowInputs, comfyUiConfigured, loadWorkflow, queueWorkflow } from "../../../lib/server/comfyui";
+import { getDb, getMediaBucket } from "../../../../db";
+import { assets, generationJobs, workflowBindings } from "../../../../db/schema";
+import { applyWorkflowInputs, comfyUiConfigured, loadWorkflow, queueWorkflow, uploadWorkflowInput } from "../../../lib/server/comfyui";
 import { errorResponse, json, readJson } from "../../../lib/server/http";
 import { getOwnedProject } from "../../../lib/server/project-access";
 import { getRequestUser } from "../../../lib/server/request-user";
@@ -39,7 +39,17 @@ export async function POST(request: Request) {
   try {
     const workflow = await loadWorkflow(binding.workflowStorageKey);
     const contract = JSON.parse(binding.inputContractJson) as Record<string, { nodeId: string; input: string }>;
-    const prepared = applyWorkflowInputs(workflow, contract, body.payload ?? {});
+    const payload: Record<string, unknown> = { ...(body.payload ?? {}) };
+    if (capability === "image_to_video" && typeof payload.firstFrameAssetId === "string") {
+      const asset = (await db.select().from(assets).where(and(eq(assets.id, payload.firstFrameAssetId), eq(assets.projectId, body.projectId))).limit(1))[0];
+      if (!asset?.storageKey) throw new Error("FIRST_FRAME_ASSET_NOT_FOUND");
+      const object = await getMediaBucket().get(asset.storageKey);
+      if (!object) throw new Error("FIRST_FRAME_FILE_NOT_FOUND");
+      const file = new File([await object.arrayBuffer()], asset.name || "first-frame.png", { type: object.httpMetadata?.contentType ?? "image/png" });
+      const uploaded = await uploadWorkflowInput(file, `xiaofeixiang-shot-${body.entityId}`);
+      payload.firstFrame = uploaded.workflowValue;
+    }
+    const prepared = applyWorkflowInputs(workflow, contract, payload);
     const queued = await queueWorkflow(prepared);
     await db.update(generationJobs).set({ status: "queued", comfyPromptId: queued.promptId, startedAt: new Date(), updatedAt: new Date() }).where(eq(generationJobs.id, id));
     return json({ job: { id, status: "queued", promptId: queued.promptId } }, { status: 202 });

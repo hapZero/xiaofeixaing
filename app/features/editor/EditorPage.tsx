@@ -21,13 +21,16 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
   const [saveState, setSaveState] = useState<"已保存" | "保存中" | "保存失败">("已保存");
   const [generationState, setGenerationState] = useState("");
   const [generationJobId, setGenerationJobId] = useState<string | null>(null);
+  const [generationCapability, setGenerationCapability] = useState<"storyboard_frame" | "image_to_video">("storyboard_frame");
   const [generationResultUrl, setGenerationResultUrl] = useState<string | null>(null);
+  const [videoResultUrl, setVideoResultUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(initialProject));
   const projectId = initialProject?.id ?? null;
   const shots = useMemo(() => [...(detail?.shots ?? [])].sort((a, b) => a.sequence - b.sequence), [detail]);
   const selectedShot = shots[segment] ?? null;
   const selectedEpisode = detail?.episodes.find((episode) => episode.id === selectedShot?.episodeId) ?? detail?.episodes[0] ?? null;
   const selectedFrameAsset = detail?.assets.find((asset) => asset.id === selectedShot?.firstFrameAssetId) ?? null;
+  const selectedVideoAsset = detail?.assets.find((asset) => asset.id === selectedShot?.videoAssetId) ?? null;
 
   useEffect(() => {
     if (!projectId) return;
@@ -55,17 +58,18 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
     let timer = 0;
     const poll = async () => {
       const response = await fetch(`/api/generation/jobs/${generationJobId}`, { cache: "no-store" });
-      const data = await response.json() as { job?: { status: string; errorMessage?: string; result?: { assetUrl?: string } } };
+      const data = await response.json() as { job?: { status: string; errorMessage?: string; result?: { assetUrl?: string; mediaType?: string } } };
       if (cancelled || !data.job) return;
       if (["queued", "running", "submitting"].includes(data.job.status)) {
-        setGenerationState(data.job.status === "running" ? "ComfyUI 正在生成分镜首帧…" : "任务正在等待 Spark 执行…");
+        setGenerationState(data.job.status === "running" ? `ComfyUI 正在生成${generationCapability === "image_to_video" ? "分镜视频" : "分镜首帧"}…` : "任务正在等待 Spark 执行…");
         timer = window.setTimeout(poll, 1600);
         return;
       }
       setGenerationJobId(null);
       if (data.job.status === "succeeded") {
-        setGenerationResultUrl(data.job.result?.assetUrl ?? null);
-        setGenerationState("首帧已生成并归档到当前分镜");
+        if (generationCapability === "image_to_video") setVideoResultUrl(data.job.result?.assetUrl ?? null);
+        else setGenerationResultUrl(data.job.result?.assetUrl ?? null);
+        setGenerationState(generationCapability === "image_to_video" ? "视频已生成并归档到当前分镜" : "首帧已生成并归档到当前分镜");
         const detailResponse = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
         if (detailResponse.ok && !cancelled) setDetail(await detailResponse.json() as EditorDetail);
       } else {
@@ -74,7 +78,7 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
     };
     timer = window.setTimeout(poll, 900);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [generationJobId, projectId]);
+  }, [generationCapability, generationJobId, projectId]);
 
   useEffect(() => {
     if (!projectId || !selectedShot || prompt === selectedShot.prompt) return;
@@ -99,11 +103,17 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
     setGenerationState("");
     setGenerationJobId(null);
     setGenerationResultUrl(null);
+    setVideoResultUrl(null);
   };
 
-  const submitGeneration = async () => {
+  const submitGeneration = async (capability: "storyboard_frame" | "image_to_video") => {
     if (!projectId || !selectedShot) return;
-    setGenerationState("正在提交首帧生成任务…");
+    if (capability === "image_to_video" && !selectedShot.firstFrameAssetId) {
+      setGenerationState("请先生成或选择分镜首帧");
+      return;
+    }
+    setGenerationCapability(capability);
+    setGenerationState(capability === "image_to_video" ? "正在提交图生视频任务…" : "正在提交首帧生成任务…");
     const response = await fetch("/api/generation/jobs", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -111,13 +121,15 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
         projectId,
         entityType: "shot",
         entityId: selectedShot.id,
-        capability: "storyboard_frame",
-        payload: { prompt, aspectRatio: detail?.project.aspectRatio, stylePreset: detail?.project.stylePreset },
+        capability,
+        payload: capability === "image_to_video"
+          ? { firstFrameAssetId: selectedShot.firstFrameAssetId, prompt, duration: Math.max(1, Math.round(selectedShot.durationMs / 1_000)) }
+          : { prompt, aspectRatio: detail?.project.aspectRatio, stylePreset: detail?.project.stylePreset },
       }),
     });
     const data = await response.json() as { job?: { id: string }; error?: { message?: string } };
     if (!response.ok) {
-      setGenerationState(data.error?.message ?? "首帧任务提交失败");
+      setGenerationState(data.error?.message ?? (capability === "image_to_video" ? "视频任务提交失败" : "首帧任务提交失败"));
       return;
     }
     if (data.job?.id) setGenerationJobId(data.job.id);
@@ -129,6 +141,7 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
   const referencedScenes = sceneAssets.filter((asset) => prompt.includes(asset.name));
   const environmentPreset = detail?.audioPresets.find((preset) => preset.id === selectedShot?.environmentPresetId) ?? null;
   const displayFrameUrl = generationResultUrl ?? selectedFrameAsset?.thumbnailUrl ?? null;
+  const displayVideoUrl = videoResultUrl ?? selectedVideoAsset?.thumbnailUrl ?? null;
 
   if (!initialProject) {
     return <div className="editor-page"><div className="missing-project"><b>还没有选择短剧项目</b><p>请先从分集视频页面进入分镜编辑器。</p><AppButton primary onClick={() => onNavigate("drama")}>返回我的短剧</AppButton></div></div>;
@@ -154,11 +167,11 @@ export function EditorPage({ onNavigate, project: initialProject }: { onNavigate
               <div className="storyboard-heading"><div><p className="eyebrow">当前分镜</p><h2>分镜 {String(segment + 1).padStart(2, "0")} · {selectedShot.title}</h2></div><div className="credit-note">预计 {Math.round(selectedShot.durationMs / 1_000)} 秒</div></div>
               <div className="referenced-assets"><span>自动引用</span>{referencedScenes.map((asset, index) => <button key={asset.id}><i style={{ backgroundImage: `url(${sceneImages[index % sceneImages.length]})` }} />{asset.name}</button>)}{referencedCharacters.map((character, index) => <button key={character.id}><i style={{ backgroundImage: `url(${roleImages[index % roleImages.length]})` }} />{character.canonicalName}</button>)}{!referencedScenes.length && !referencedCharacters.length && <small>当前描述尚未匹配项目资产名称</small>}</div>
               <div className="shot-script dynamic-shot-editor"><label>分镜描述<textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setSaveState("保存中"); }} /></label><div className="shot-editor-meta"><span>{prompt.length} 字</span><span>{environmentPreset ? `声音场：${environmentPreset.name}` : "尚未继承场景声音场"}</span></div></div>
-              <div className="storyboard-actions"><AppButton disabled={saveState === "保存中"}>保存状态：{saveState}</AppButton><AppButton primary disabled={Boolean(generationJobId)} onClick={submitGeneration}>{generationJobId ? "正在生成…" : selectedShot.firstFrameAssetId ? "重新生成首帧" : "生成分镜首帧"}</AppButton></div>
+              <div className="storyboard-actions"><AppButton disabled={saveState === "保存中"}>保存状态：{saveState}</AppButton><AppButton disabled={Boolean(generationJobId)} onClick={() => void submitGeneration("storyboard_frame")}>{generationJobId && generationCapability === "storyboard_frame" ? "正在生成…" : selectedShot.firstFrameAssetId ? "重新生成首帧" : "生成分镜首帧"}</AppButton><AppButton primary disabled={Boolean(generationJobId) || !selectedShot.firstFrameAssetId} onClick={() => void submitGeneration("image_to_video")}>{generationJobId && generationCapability === "image_to_video" ? "正在生成视频…" : selectedShot.videoAssetId ? "重新生成视频" : "生成分镜视频"}</AppButton></div>
               {generationState && <div className={`generation-state ${generationState.includes("需要先配置") ? "needs-config" : ""}`}>{generationState}</div>}
             </main>
             <aside className="video-preview-panel">
-              <div className={`video-stage ${displayFrameUrl ? "generated-frame" : "awaiting-generation"}`} style={{ backgroundImage: `url(${displayFrameUrl ?? videoImages[segment % videoImages.length]})` }}>{!displayFrameUrl && <div className="awaiting-label"><b>{generationJobId ? "正在生成首帧" : "等待生成首帧"}</b><span>{selectedShot.status}</span></div>}<div className="video-stage-top"><Pill dark>分镜 {String(segment + 1).padStart(2, "0")}</Pill></div></div>
+              <div className={`video-stage ${displayVideoUrl ? "generated-video" : displayFrameUrl ? "generated-frame" : "awaiting-generation"}`} style={displayVideoUrl ? undefined : { backgroundImage: `url(${displayFrameUrl ?? videoImages[segment % videoImages.length]})` }}>{displayVideoUrl ? <video controls src={displayVideoUrl} /> : !displayFrameUrl && <div className="awaiting-label"><b>{generationJobId ? `正在生成${generationCapability === "image_to_video" ? "视频" : "首帧"}` : "等待生成首帧"}</b><span>{selectedShot.status}</span></div>}<div className="video-stage-top"><Pill dark>分镜 {String(segment + 1).padStart(2, "0")}</Pill></div></div>
               <div className="preview-tools"><button disabled>▧<span>原视频</span></button><button disabled>◇<span>提升画质</span></button><button disabled>⌁<span>擦除字幕</span></button><button disabled>⇩<span>下载</span></button></div>
               <div className="sound-continuity"><div><span>≈</span><div><b>声音连续性</b><p>{environmentPreset?.description ?? "该分镜尚未匹配场景环境音"}</p></div></div><i>{environmentPreset?.locked ? "已锁定" : "待配置"}</i></div>
             </aside>

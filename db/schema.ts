@@ -160,3 +160,20 @@ export const generationJobs = sqliteTable("generation_jobs", {
   index("generation_jobs_project_created_idx").on(table.projectId, table.createdAt),
   index("generation_jobs_owner_status_idx").on(table.ownerId, table.status),
 ]);
+
+export const workflowTestRuns = sqliteTable("workflow_test_runs", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  workflowBindingId: text("workflow_binding_id").notNull().references(() => workflowBindings.id, { onDelete: "cascade" }),
+  capability: text("capability").notNull(),
+  status: text("status").notNull().default("queued"),
+  comfyPromptId: text("comfy_prompt_id"),
+  inputSummaryJson: text("input_summary_json").notNull().default("{}"),
+  resultJson: text("result_json"),
+  errorMessage: text("error_message"),
+  finishedAt: integer("finished_at", { mode: "timestamp" }),
+  ...timestamps,
+}, (table) => [
+  index("workflow_test_runs_owner_created_idx").on(table.ownerId, table.createdAt),
+  index("workflow_test_runs_status_idx").on(table.status),
+]);

@@ -40,6 +40,9 @@ export async function GET(request: Request, context: RouteContext) {
     const outputContract = JSON.parse(binding.outputContractJson) as WorkflowOutputContract;
     const output = selectWorkflowOutput(record, outputContract);
     if (!output) throw new Error(`WORKFLOW_OUTPUT_MISSING:${outputContract.nodeId}.${outputContract.output}`);
+    if (output.outputKey && output.outputKey !== outputContract.output) {
+      await db.update(workflowBindings).set({ outputContractJson: JSON.stringify({ ...outputContract, output: output.outputKey }), updatedAt: new Date() }).where(eq(workflowBindings.id, binding.id));
+    }
     const downloaded = await downloadWorkflowOutput(output);
     const assetId = crypto.randomUUID();
     const storageKey = `generated/${user.id}/${job.projectId}/${assetId}${extension(output.filename, outputContract.mediaType)}`;

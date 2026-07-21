@@ -60,3 +60,21 @@ export const workflowBindings = pgTable("workflow_bindings", {
   uniqueIndex("workflow_bindings_owner_capability_name_uidx").on(table.ownerId, table.capability, table.name),
   index("workflow_bindings_capability_enabled_idx").on(table.capability, table.enabled),
 ]);
+
+export const workflowTestRuns = pgTable("workflow_test_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  workflowBindingId: uuid("workflow_binding_id").notNull().references(() => workflowBindings.id, { onDelete: "cascade" }),
+  capability: text("capability").notNull(),
+  status: generationStatus("status").notNull().default("waiting"),
+  comfyPromptId: text("comfy_prompt_id"),
+  inputSummary: jsonb("input_summary").notNull().default({}),
+  result: jsonb("result"),
+  error: jsonb("error"),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("workflow_test_runs_owner_created_idx").on(table.ownerId, table.createdAt),
+  index("workflow_test_runs_status_idx").on(table.status),
+]);

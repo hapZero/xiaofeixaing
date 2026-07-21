@@ -6,7 +6,7 @@ type InputTarget = { nodeId: string; input: string };
 type WorkflowDocument = Record<string, { inputs?: Record<string, unknown>; [key: string]: unknown }>;
 export type WorkflowInputTarget = { nodeId: string; input: string };
 export type WorkflowOutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json" };
-export type ComfyOutputFile = { filename: string; subfolder?: string; type?: string };
+export type ComfyOutputFile = { filename: string; subfolder?: string; type?: string; outputKey?: string };
 export type StoredWorkflowFormat = "api" | "editor" | "unknown";
 export type StoredWorkflowAnalysis = {
   name: string;
@@ -29,6 +29,10 @@ function config() {
 
 function headers(apiKey: string): HeadersInit {
   return apiKey ? { "content-type": "application/json", authorization: `Bearer ${apiKey}` } : { "content-type": "application/json" };
+}
+
+function authHeaders(apiKey: string): HeadersInit {
+  return apiKey ? { authorization: `Bearer ${apiKey}` } : {};
 }
 
 export function comfyUiConfigured(): boolean {
@@ -140,6 +144,23 @@ export async function queueWorkflow(workflow: WorkflowDocument): Promise<{ promp
   return { promptId: result.prompt_id };
 }
 
+export async function uploadWorkflowInput(file: File, prefix = "xiaofeixiang"): Promise<{ name: string; subfolder: string; type: string; workflowValue: string }> {
+  const { baseUrl, apiKey } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "input.bin";
+  const uploadName = `${prefix}-${crypto.randomUUID()}-${safeName}`;
+  const form = new FormData();
+  form.append("image", new File([await file.arrayBuffer()], uploadName, { type: file.type || "application/octet-stream" }));
+  form.append("type", "input");
+  form.append("overwrite", "false");
+  const response = await fetch(`${baseUrl}/upload/image`, { method: "POST", headers: authHeaders(apiKey), body: form, signal: AbortSignal.timeout(60_000) });
+  if (!response.ok) throw new Error(`COMFYUI_INPUT_UPLOAD_FAILED:${response.status}`);
+  const result = await response.json() as { name?: string; subfolder?: string; type?: string };
+  if (!result.name) throw new Error("COMFYUI_INPUT_UPLOAD_INVALID");
+  const subfolder = result.subfolder ?? "";
+  return { name: result.name, subfolder, type: result.type ?? "input", workflowValue: subfolder ? `${subfolder}/${result.name}` : result.name };
+}
+
 export async function getWorkflowHistory(promptId: string): Promise<unknown> {
   const { baseUrl, apiKey } = config();
   if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
@@ -162,10 +183,14 @@ export function historyFailed(record: Record<string, unknown>): boolean {
 export function selectWorkflowOutput(record: Record<string, unknown>, contract: WorkflowOutputContract): ComfyOutputFile | null {
   const outputs = record.outputs as Record<string, Record<string, unknown>> | undefined;
   const nodeOutput = outputs?.[contract.nodeId];
-  const candidates = nodeOutput?.[contract.output];
-  if (!Array.isArray(candidates)) return null;
-  const first = candidates[0] as Partial<ComfyOutputFile> | undefined;
-  return first?.filename ? { filename: first.filename, subfolder: first.subfolder, type: first.type } : null;
+  if (!nodeOutput) return null;
+  const collections: Array<[string, unknown]> = [[contract.output, nodeOutput[contract.output]], ...Object.entries(nodeOutput).filter(([key]) => key !== contract.output)];
+  for (const [outputKey, candidates] of collections) {
+    if (!Array.isArray(candidates)) continue;
+    const first = candidates[0] as Partial<ComfyOutputFile> | undefined;
+    if (first?.filename) return { filename: first.filename, subfolder: first.subfolder, type: first.type, outputKey };
+  }
+  return null;
 }
 
 export async function downloadWorkflowOutput(file: ComfyOutputFile): Promise<{ bytes: ArrayBuffer; contentType: string }> {

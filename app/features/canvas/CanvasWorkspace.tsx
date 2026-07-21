@@ -142,8 +142,12 @@ function CanvasWorkspace({
     if (!projectId) return;
     let cancelled = false;
     fetch(`/api/projects/${projectId}/canvas`, { cache: "no-store" })
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("LOAD_FAILED")))
-      .then((data: { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> }) => {
+      .then(async (response) => {
+        if (!response.ok) throw new Error("LOAD_FAILED");
+        return response.json();
+      })
+      .then((raw) => {
+        const data = raw as { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>> };
         if (cancelled) return;
         if (data.nodes?.length) {
           setNodes(data.nodes.map((item) => ({
@@ -320,4 +324,3 @@ export function FreeCanvasPage({ onNavigate }: { onNavigate: (view: View) => voi
   }, []);
   return <CanvasWorkspace title="自由画布 · 校园悬疑灵感" projectId={projectId} onClose={() => onNavigate("home")} onContinue={() => onNavigate("drama")} continueLabel="整理为短剧项目 →" />;
 }
-

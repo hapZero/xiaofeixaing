@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Logo, Pill } from "../../components/ui";
+import { videoImages } from "../studio/media";
 
 export function Login({ onEnter }: { onEnter: () => void }) {
   const [phone, setPhone] = useState("138 6355 4010");

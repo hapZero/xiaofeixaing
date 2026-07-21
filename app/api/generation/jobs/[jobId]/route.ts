@@ -4,6 +4,7 @@ import { assets, episodes, generationJobs, shots, workflowBindings } from "../..
 import { downloadWorkflowOutput, getHistoryRecord, getWorkflowHistory, historyFailed, selectWorkflowOutput, type WorkflowOutputContract } from "../../../../lib/server/comfyui";
 import { errorResponse, json } from "../../../../lib/server/http";
 import { getRequestUser } from "../../../../lib/server/request-user";
+import { syncExecutionProgress } from "../../../../lib/server/workflow-progress";
 
 type RouteContext = { params: Promise<{ jobId: string }> };
 
@@ -23,11 +24,13 @@ export async function GET(request: Request, context: RouteContext) {
   if (!job.comfyPromptId || !["queued", "running"].includes(job.status)) return json({ job });
 
   try {
+    const live = await syncExecutionProgress({ ownerId: user.id, executionType: "generation_job", executionId: jobId, promptId: job.comfyPromptId });
+    if (live?.snapshot.status === "failed") throw new Error("COMFYUI_EXECUTION_FAILED");
     const history = await getWorkflowHistory(job.comfyPromptId);
     const record = getHistoryRecord(history, job.comfyPromptId);
     if (!record) {
       if (job.status !== "running") await db.update(generationJobs).set({ status: "running", updatedAt: new Date() }).where(eq(generationJobs.id, jobId));
-      return json({ job: { ...job, status: "running" } });
+      return json({ job: { ...job, status: "running", progress: live?.progress ?? null } });
     }
     if (historyFailed(record)) {
       const failed = { status: "failed", errorCode: "COMFYUI_EXECUTION_FAILED", errorMessage: "ComfyUI 工作流执行失败", finishedAt: new Date(), updatedAt: new Date() };
@@ -80,7 +83,7 @@ export async function GET(request: Request, context: RouteContext) {
     const result = { assetId, assetUrl: `/api/assets/${assetId}/content`, mediaType: outputContract.mediaType, filename: output.filename };
     const completed = { status: "succeeded", resultJson: JSON.stringify(result), finishedAt: now, updatedAt: now };
     await db.update(generationJobs).set(completed).where(eq(generationJobs.id, jobId));
-    return json({ job: { ...job, ...completed, result } });
+    return json({ job: { ...job, ...completed, result, progress: { ...(live?.progress ?? {}), overall: 100, stage: "生成结果已归档" } } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "HISTORY_UNAVAILABLE";
     const failed = { status: "failed", errorCode: message.split(":")[0], errorMessage: message, finishedAt: new Date(), updatedAt: new Date() };

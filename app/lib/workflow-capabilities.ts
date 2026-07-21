@@ -2,7 +2,7 @@ export type WorkflowInputDefinition = {
   key: string;
   label: string;
   required: boolean;
-  valueType: "text" | "number" | "image" | "video" | "audio" | "json";
+  valueType: "text" | "number" | "boolean" | "image" | "video" | "audio" | "json";
 };
 
 export type WorkflowOutputDefinition = {
@@ -44,6 +44,7 @@ export const workflowCapabilities = [
     { key: "firstFrame", label: "分镜首帧", required: true, valueType: "image" },
     { key: "prompt", label: "动作描述", required: true, valueType: "text" },
     { key: "duration", label: "片段时长", required: false, valueType: "number" },
+    { key: "promptEnhance", label: "动作提示增强", required: false, valueType: "boolean" },
   ], outputs: [{ key: "video", label: "分镜视频", mediaType: "video" }] }),
   capability({ key: "voice_synthesis", name: "固定角色音色", requirement: "根据角色音色标识与台词生成稳定一致的人声", inputs: [
     { key: "text", label: "角色台词", required: true, valueType: "text" },

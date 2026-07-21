@@ -50,9 +50,9 @@ export async function POST(request: Request) {
       payload.firstFrame = uploaded.workflowValue;
     }
     const prepared = applyWorkflowInputs(workflow, contract, payload);
-    const queued = await queueWorkflow(prepared);
+    const queued = await queueWorkflow(prepared, { executionType: "generation_job", executionId: id, ownerId: user.id, projectId: body.projectId, capability, bindingId: binding.id });
     await db.update(generationJobs).set({ status: "queued", comfyPromptId: queued.promptId, startedAt: new Date(), updatedAt: new Date() }).where(eq(generationJobs.id, id));
-    return json({ job: { id, status: "queued", promptId: queued.promptId } }, { status: 202 });
+    return json({ job: { id, status: "queued", promptId: queued.promptId, progressSource: queued.bridgeRegistered ? "bridge" : "polling" } }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN_GENERATION_ERROR";
     await db.update(generationJobs).set({ status: "failed", errorCode: message.split(":")[0], errorMessage: message, finishedAt: new Date(), updatedAt: new Date() }).where(eq(generationJobs.id, id));

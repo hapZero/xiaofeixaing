@@ -4,6 +4,7 @@ import { workflowBindings, workflowTestRuns } from "../../../../../db/schema";
 import { downloadWorkflowOutput, getHistoryRecord, getWorkflowHistory, historyFailed, inspectMp4DurationSeconds, selectWorkflowOutput, type WorkflowOutputContract } from "../../../../lib/server/comfyui";
 import { errorResponse, json } from "../../../../lib/server/http";
 import { getRequestUser } from "../../../../lib/server/request-user";
+import { syncExecutionProgress } from "../../../../lib/server/workflow-progress";
 
 type RouteContext = { params: Promise<{ runId: string }> };
 
@@ -16,11 +17,13 @@ export async function GET(request: Request, context: RouteContext) {
   if (!run) return errorResponse(404, "TEST_RUN_NOT_FOUND", "测试任务不存在");
   if (!["queued", "running"].includes(run.status) || !run.comfyPromptId) return json({ run: { ...run, result: run.resultJson ? JSON.parse(run.resultJson) : null } });
   try {
+    const live = await syncExecutionProgress({ ownerId: user.id, executionType: "test_run", executionId: runId, promptId: run.comfyPromptId });
+    if (live?.snapshot.status === "failed") throw new Error("COMFYUI_EXECUTION_FAILED");
     const history = await getWorkflowHistory(run.comfyPromptId);
     const record = getHistoryRecord(history, run.comfyPromptId);
     if (!record) {
       if (run.status !== "running") await db.update(workflowTestRuns).set({ status: "running", updatedAt: new Date() }).where(eq(workflowTestRuns.id, runId));
-      return json({ run: { ...run, status: "running" } });
+      return json({ run: { ...run, status: "running", progress: live?.progress ?? null } });
     }
     if (historyFailed(record)) throw new Error("COMFYUI_EXECUTION_FAILED");
     const binding = (await db.select().from(workflowBindings).where(and(eq(workflowBindings.id, run.workflowBindingId), eq(workflowBindings.ownerId, user.id))).limit(1))[0];
@@ -44,7 +47,7 @@ export async function GET(request: Request, context: RouteContext) {
     const result = { mediaType: contract.mediaType, file, outputUrl: `/api/workflows/test-runs/${runId}/output`, durationSeconds };
     const completed = { status: "succeeded", resultJson: JSON.stringify(result), finishedAt: new Date(), updatedAt: new Date() };
     await db.update(workflowTestRuns).set(completed).where(eq(workflowTestRuns.id, runId));
-    return json({ run: { ...run, ...completed, result } });
+    return json({ run: { ...run, ...completed, result, progress: { ...(live?.progress ?? {}), overall: 100, stage: "视频已返回" } } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "WORKFLOW_TEST_FAILED";
     const failed = { status: "failed", errorMessage: message, finishedAt: new Date(), updatedAt: new Date() };

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { getMediaBucket } from "../../../db";
 
-type RuntimeEnv = { COMFYUI_BASE_URL?: string; COMFYUI_API_KEY?: string; COMFYUI_CLIENT_ID?: string };
+type RuntimeEnv = { COMFYUI_BASE_URL?: string; COMFYUI_API_KEY?: string; COMFYUI_CLIENT_ID?: string; COMFYUI_BRIDGE_TOKEN?: string };
 type InputTarget = { nodeId: string; input: string };
 type WorkflowDocument = Record<string, { inputs?: Record<string, unknown>; [key: string]: unknown }>;
 export type WorkflowInputTarget = { nodeId: string; input: string };
@@ -17,6 +17,38 @@ export type StoredWorkflowAnalysis = {
   suggestedLabel: string;
   outputNodeTypes: string[];
 };
+export type BridgeNode = { id: string; classType: string; title: string; weight: number };
+export type BridgeWorkflowSummary = {
+  id: string;
+  name: string;
+  latestVersion: string;
+  updatedAt: number;
+  nodeCount: number;
+  nodes: BridgeNode[];
+};
+export type BridgeExecutionEvent = {
+  sequence: number;
+  type: string;
+  promptId: string | null;
+  occurredAt: number;
+  data: Record<string, unknown>;
+  snapshot?: BridgeExecutionSnapshot;
+};
+export type BridgeExecutionSnapshot = {
+  promptId: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  currentNodeId: string | null;
+  currentNodeTitle: string | null;
+  nodeValue: number | null;
+  nodeMax: number | null;
+  overallProgress: number;
+  completedNodeIds: string[];
+  cachedNodeIds: string[];
+  totalNodes: number;
+  completedNodes: number;
+  updatedAt: number;
+  error?: Record<string, unknown>;
+};
 
 function config() {
   const runtime = env as unknown as RuntimeEnv;
@@ -24,7 +56,12 @@ function config() {
     baseUrl: runtime.COMFYUI_BASE_URL?.replace(/\/$/, "") ?? "",
     apiKey: runtime.COMFYUI_API_KEY ?? "",
     clientId: runtime.COMFYUI_CLIENT_ID ?? "xiaofeixiang",
+    bridgeToken: runtime.COMFYUI_BRIDGE_TOKEN ?? "",
   };
+}
+
+function bridgeHeaders(token: string): HeadersInit {
+  return { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) };
 }
 
 function headers(apiKey: string): HeadersInit {
@@ -109,6 +146,71 @@ export async function testComfyUiConnection(): Promise<{ connected: boolean; dev
   return { connected: true, deviceCount: data.devices?.length ?? 0, system: data.system?.os ?? null };
 }
 
+export async function getComfyUiBridgeHealth(): Promise<{ installed: boolean; version: string | null; authorized: boolean }> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl) return { installed: false, version: null, authorized: false };
+  try {
+    const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/health`, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) return { installed: false, version: null, authorized: false };
+    const data = await response.json() as { installed?: boolean; version?: string };
+    if (!data.installed) return { installed: false, version: null, authorized: false };
+    if (!bridgeToken) return { installed: true, version: data.version ?? null, authorized: false };
+    const workflowResponse = await fetch(`${baseUrl}/xiaofeixiang/bridge/workflows`, { headers: bridgeHeaders(bridgeToken), signal: AbortSignal.timeout(5_000) });
+    return { installed: true, version: data.version ?? null, authorized: workflowResponse.ok };
+  } catch {
+    return { installed: false, version: null, authorized: false };
+  }
+}
+
+export async function listBridgeWorkflows(): Promise<BridgeWorkflowSummary[]> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  if (!bridgeToken) throw new Error("COMFYUI_BRIDGE_TOKEN_MISSING");
+  const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/workflows`, { headers: bridgeHeaders(bridgeToken), signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`COMFYUI_BRIDGE_WORKFLOWS_FAILED:${response.status}`);
+  const data = await response.json() as { workflows?: BridgeWorkflowSummary[] };
+  return Array.isArray(data.workflows) ? data.workflows : [];
+}
+
+export async function getBridgeWorkflow(workflowId: string, version?: string): Promise<{ workflow: BridgeWorkflowSummary; version: string; api: WorkflowDocument }> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  if (!bridgeToken) throw new Error("COMFYUI_BRIDGE_TOKEN_MISSING");
+  const query = version ? `?version=${encodeURIComponent(version)}` : "";
+  const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/workflows/${encodeURIComponent(workflowId)}${query}`, { headers: bridgeHeaders(bridgeToken), signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`COMFYUI_BRIDGE_WORKFLOW_READ_FAILED:${response.status}`);
+  return response.json() as Promise<{ workflow: BridgeWorkflowSummary; version: string; api: WorkflowDocument }>;
+}
+
+async function registerBridgeExecution(promptId: string, workflow: WorkflowDocument, metadata: Record<string, unknown>): Promise<boolean> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl || !bridgeToken) return false;
+  try {
+    const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/executions/register`, {
+      method: "POST",
+      headers: bridgeHeaders(bridgeToken),
+      body: JSON.stringify({ promptId, workflow, metadata }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function getBridgeExecution(promptId: string, since = 0): Promise<{ execution: BridgeExecutionSnapshot; events: BridgeExecutionEvent[] } | null> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl || !bridgeToken) return null;
+  try {
+    const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/executions/${encodeURIComponent(promptId)}?since=${Math.max(0, since)}`, { headers: bridgeHeaders(bridgeToken), signal: AbortSignal.timeout(8_000) });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`COMFYUI_BRIDGE_EXECUTION_FAILED:${response.status}`);
+    return response.json() as Promise<{ execution: BridgeExecutionSnapshot; events: BridgeExecutionEvent[] }>;
+  } catch {
+    return null;
+  }
+}
+
 export async function loadWorkflow(storageKey: string): Promise<WorkflowDocument> {
   const object = await getMediaBucket().get(storageKey);
   if (!object) throw new Error("WORKFLOW_FILE_NOT_FOUND");
@@ -133,7 +235,7 @@ export function applyWorkflowInputs(workflow: WorkflowDocument, contract: Record
   return copy;
 }
 
-export async function queueWorkflow(workflow: WorkflowDocument): Promise<{ promptId: string }> {
+export async function queueWorkflow(workflow: WorkflowDocument, metadata: Record<string, unknown> = {}): Promise<{ promptId: string; bridgeRegistered: boolean }> {
   const { baseUrl, apiKey, clientId } = config();
   if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
   const response = await fetch(`${baseUrl}/prompt`, {
@@ -145,7 +247,8 @@ export async function queueWorkflow(workflow: WorkflowDocument): Promise<{ promp
   if (!response.ok) throw new Error(`COMFYUI_QUEUE_FAILED:${response.status}`);
   const result = await response.json() as { prompt_id?: string };
   if (!result.prompt_id) throw new Error("COMFYUI_PROMPT_ID_MISSING");
-  return { promptId: result.prompt_id };
+  const bridgeRegistered = await registerBridgeExecution(result.prompt_id, workflow, metadata);
+  return { promptId: result.prompt_id, bridgeRegistered };
 }
 
 export async function uploadWorkflowInput(file: File, prefix = "xiaofeixiang"): Promise<{ name: string; subfolder: string; type: string; workflowValue: string }> {

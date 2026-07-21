@@ -71,6 +71,7 @@ export async function POST(request: Request, context: RouteContext) {
         continue;
       }
       if (input.valueType === "number") payload[input.key] = Number(value);
+      else if (input.valueType === "boolean") payload[input.key] = value === "true" || value === "1";
       else if (input.valueType === "json") payload[input.key] = JSON.parse(value);
       else payload[input.key] = value;
       summary[input.key] = payload[input.key];
@@ -78,9 +79,9 @@ export async function POST(request: Request, context: RouteContext) {
     const workflow = await loadWorkflow(binding.workflowStorageKey);
     const contract = JSON.parse(binding.inputContractJson) as Record<string, { nodeId: string; input: string }>;
     const prepared = applyWorkflowInputs(workflow, contract, payload);
-    const queued = await queueWorkflow(prepared);
+    const queued = await queueWorkflow(prepared, { executionType: "test_run", executionId: runId, ownerId: user.id, capability: binding.capability, bindingId: binding.id });
     await db.update(workflowTestRuns).set({ status: "queued", comfyPromptId: queued.promptId, inputSummaryJson: JSON.stringify(summary), updatedAt: new Date() }).where(eq(workflowTestRuns.id, runId));
-    return json({ run: { id: runId, status: "queued", promptId: queued.promptId } }, { status: 202 });
+    return json({ run: { id: runId, status: "queued", promptId: queued.promptId, progressSource: queued.bridgeRegistered ? "bridge" : "polling" } }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "WORKFLOW_TEST_SUBMIT_FAILED";
     await db.update(workflowTestRuns).set({ status: "failed", errorMessage: message, finishedAt: new Date(), updatedAt: new Date() }).where(eq(workflowTestRuns.id, runId));

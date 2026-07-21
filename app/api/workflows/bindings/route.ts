@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb, getMediaBucket } from "../../../../db";
-import { workflowBindings } from "../../../../db/schema";
+import { workflowBindings, workflowVersions } from "../../../../db/schema";
+import { getBridgeWorkflow } from "../../../lib/server/comfyui";
 import { errorResponse, json, readJson } from "../../../lib/server/http";
 import { getRequestUser } from "../../../lib/server/request-user";
 import { getWorkflowCapability, isWorkflowCapability } from "../../../lib/workflow-capabilities";
@@ -13,6 +14,8 @@ type SaveBindingBody = {
   capability?: string;
   name?: string;
   workflow?: WorkflowDocument;
+  bridgeWorkflowId?: string;
+  bridgeVersion?: string;
   inputContract?: InputContract;
   outputContract?: OutputContract;
   enabled?: boolean;
@@ -49,6 +52,9 @@ function publicBinding(binding: typeof workflowBindings.$inferSelect) {
     id: binding.id,
     capability: binding.capability,
     name: binding.name,
+    sourceType: binding.sourceType,
+    sourceWorkflowId: binding.sourceWorkflowId,
+    sourceVersion: binding.sourceVersion,
     inputContract: JSON.parse(binding.inputContractJson) as InputContract,
     outputContract: JSON.parse(binding.outputContractJson) as OutputContract,
     enabled: binding.enabled,
@@ -69,23 +75,51 @@ export async function POST(request: Request) {
   if (!user) return errorResponse(401, "AUTH_REQUIRED", "请先登录小飞象");
   const body = await readJson<SaveBindingBody>(request);
   if (!body?.capability || !isWorkflowCapability(body.capability)) return errorResponse(400, "INVALID_CAPABILITY", "请选择有效的工作流能力");
-  if (!isWorkflowDocument(body.workflow)) return errorResponse(400, "INVALID_WORKFLOW", "请上传 ComfyUI API 格式的工作流 JSON");
+  let workflow = body.workflow;
+  let bridgeName: string | null = null;
+  let bridgeVersion: string | null = null;
+  let bridgeNodes: unknown[] = [];
+  if (body.bridgeWorkflowId) {
+    try {
+      const bridged = await getBridgeWorkflow(body.bridgeWorkflowId, body.bridgeVersion);
+      workflow = bridged.api;
+      bridgeName = bridged.workflow.name;
+      bridgeVersion = bridged.version;
+      bridgeNodes = bridged.workflow.nodes;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "COMFYUI_BRIDGE_WORKFLOW_READ_FAILED";
+      return errorResponse(502, "COMFYUI_BRIDGE_WORKFLOW_READ_FAILED", "无法从桥接器读取该工作流", { reason });
+    }
+  }
+  if (!isWorkflowDocument(workflow)) return errorResponse(400, "INVALID_WORKFLOW", "请选择桥接器已同步的 ComfyUI 工作流");
   if (!body.inputContract || !body.outputContract) return errorResponse(400, "INVALID_CONTRACT", "工作流输入和输出映射不完整");
   const definition = getWorkflowCapability(body.capability);
   if (!definition) return errorResponse(400, "INVALID_CAPABILITY", "工作流能力不存在");
-  const contractError = validateContracts(body.workflow, definition, body.inputContract, body.outputContract);
+  const contractError = validateContracts(workflow, definition, body.inputContract, body.outputContract);
   if (contractError) return errorResponse(400, "INVALID_CONTRACT", contractError);
 
   const db = getDb();
   const existingRows = await db.select().from(workflowBindings).where(and(eq(workflowBindings.ownerId, user.id), eq(workflowBindings.capability, body.capability))).limit(1);
   const existing = existingRows[0];
   const id = existing?.id ?? crypto.randomUUID();
-  const storageKey = existing?.workflowStorageKey ?? `workflows/${user.id}/${body.capability}/${id}.json`;
+  const storageKey = body.bridgeWorkflowId && bridgeVersion
+    ? `workflows/${user.id}/versions/${body.bridgeWorkflowId}/${bridgeVersion}.json`
+    : existing?.workflowStorageKey ?? `workflows/${user.id}/${body.capability}/${id}.json`;
   const now = new Date();
-  await getMediaBucket().put(storageKey, JSON.stringify(body.workflow), { httpMetadata: { contentType: "application/json" } });
+  await getMediaBucket().put(storageKey, JSON.stringify(workflow), { httpMetadata: { contentType: "application/json" } });
+  if (body.bridgeWorkflowId && bridgeVersion) {
+    await db.insert(workflowVersions).values({
+      id: crypto.randomUUID(), ownerId: user.id, bridgeWorkflowId: body.bridgeWorkflowId, version: bridgeVersion,
+      name: bridgeName ?? body.name ?? definition.name, workflowStorageKey: storageKey,
+      nodeManifestJson: JSON.stringify(bridgeNodes), createdAt: now, updatedAt: now,
+    }).onConflictDoNothing();
+  }
   const values = {
-    name: body.name?.trim().slice(0, 80) || `${definition.name}工作流`,
+    name: body.name?.trim().slice(0, 80) || bridgeName?.slice(0, 80) || `${definition.name}工作流`,
     workflowStorageKey: storageKey,
+    sourceType: body.bridgeWorkflowId ? "bridge" : "upload",
+    sourceWorkflowId: body.bridgeWorkflowId ?? null,
+    sourceVersion: bridgeVersion,
     inputContractJson: JSON.stringify(body.inputContract),
     outputContractJson: JSON.stringify(body.outputContract),
     enabled: body.enabled ?? true,

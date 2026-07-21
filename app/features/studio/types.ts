@@ -14,7 +14,7 @@ export type WorkflowInputDefinition = {
   key: string;
   label: string;
   required: boolean;
-  valueType: "text" | "number" | "image" | "video" | "audio" | "json";
+  valueType: "text" | "number" | "boolean" | "image" | "video" | "audio" | "json";
 };
 
 export type WorkflowOutputDefinition = {

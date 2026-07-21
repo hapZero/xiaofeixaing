@@ -15,6 +15,13 @@
       "when": 1784631949942,
       "tag": "0001_safe_argent",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784635380729,
+      "tag": "0002_panoramic_nico_minoru",
+      "breakpoints": true
     }
   ]
 }

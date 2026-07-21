@@ -2,3 +2,4 @@
 COMFYUI_BASE_URL=http://spark-host:8188
 COMFYUI_API_KEY=
 COMFYUI_CLIENT_ID=xiaofeixiang-local
+COMFYUI_BRIDGE_TOKEN=replace-with-a-random-64-character-token

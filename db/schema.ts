@@ -133,11 +133,28 @@ export const workflowBindings = sqliteTable("workflow_bindings", {
   capability: text("capability").notNull(),
   name: text("name").notNull(),
   workflowStorageKey: text("workflow_storage_key").notNull(),
+  sourceType: text("source_type").notNull().default("upload"),
+  sourceWorkflowId: text("source_workflow_id"),
+  sourceVersion: text("source_version"),
   inputContractJson: text("input_contract_json").notNull().default("{}"),
   outputContractJson: text("output_contract_json").notNull().default("{}"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   ...timestamps,
 }, (table) => [uniqueIndex("workflow_bindings_owner_capability_uidx").on(table.ownerId, table.capability)]);
+
+export const workflowVersions = sqliteTable("workflow_versions", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  bridgeWorkflowId: text("bridge_workflow_id").notNull(),
+  version: text("version").notNull(),
+  name: text("name").notNull(),
+  workflowStorageKey: text("workflow_storage_key").notNull(),
+  nodeManifestJson: text("node_manifest_json").notNull().default("[]"),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("workflow_versions_owner_bridge_version_uidx").on(table.ownerId, table.bridgeWorkflowId, table.version),
+  index("workflow_versions_owner_updated_idx").on(table.ownerId, table.updatedAt),
+]);
 
 export const generationJobs = sqliteTable("generation_jobs", {
   id: text("id").primaryKey(),
@@ -176,4 +193,24 @@ export const workflowTestRuns = sqliteTable("workflow_test_runs", {
 }, (table) => [
   index("workflow_test_runs_owner_created_idx").on(table.ownerId, table.createdAt),
   index("workflow_test_runs_status_idx").on(table.status),
+]);
+
+export const workflowExecutionEvents = sqliteTable("workflow_execution_events", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  executionType: text("execution_type").notNull(),
+  executionId: text("execution_id").notNull(),
+  promptId: text("prompt_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  eventType: text("event_type").notNull(),
+  nodeId: text("node_id"),
+  nodeTitle: text("node_title"),
+  nodeValue: integer("node_value"),
+  nodeMax: integer("node_max"),
+  overallProgress: integer("overall_progress").notNull().default(0),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+}, (table) => [
+  uniqueIndex("workflow_execution_events_execution_sequence_uidx").on(table.executionType, table.executionId, table.sequence),
+  index("workflow_execution_events_prompt_idx").on(table.promptId, table.sequence),
 ]);

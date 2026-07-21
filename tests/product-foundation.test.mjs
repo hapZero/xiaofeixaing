@@ -119,7 +119,7 @@ test("binds ComfyUI workflows and returns generated files to their shots", async
   assert.match(center, /API 格式/);
   assert.match(center, /inputContract/);
   assert.match(center, /suggestInputContract/);
-  assert.match(center, /从 Spark 选择已有工作流/);
+  assert.match(center, /从 ComfyUI 选择工作流/);
   assert.match(bindingsRoute, /getMediaBucket\(\)\.put/);
   assert.match(bindingsRoute, /validateContracts/);
   assert.match(connectionRoute, /testComfyUiConnection/);
@@ -131,6 +131,34 @@ test("binds ComfyUI workflows and returns generated files to their shots", async
   assert.match(assetRoute, /getOwnedProject/);
   assert.match(capabilities, /characterImages/);
   assert.match(capabilities, /voiceReference/);
+});
+
+test("syncs versioned ComfyUI workflows and persists real node progress", async () => {
+  const [bridgeExtension, bridgeClient, bridgeRoute, progress, bindingRoute, schema, migration, center] = await Promise.all([
+    read("../integrations/comfyui/xiaofeixiang_bridge/__init__.py"),
+    read("../app/lib/server/comfyui.ts"),
+    read("../app/api/workflows/bridge/route.ts"),
+    read("../app/lib/server/workflow-progress.ts"),
+    read("../app/api/workflows/bindings/route.ts"),
+    read("../db/schema.ts"),
+    read("../drizzle/0002_panoramic_nico_minoru.sql"),
+    read("../app/features/workflows/WorkflowCenter.tsx"),
+  ]);
+  assert.match(bridgeExtension, /workflows\/sync/);
+  assert.match(bridgeExtension, /executions\/register/);
+  assert.match(bridgeExtension, /send_sync_with_capture/);
+  assert.match(bridgeExtension, /max\(int\(execution\.get\("overallProgress"/);
+  assert.match(bridgeClient, /registerBridgeExecution/);
+  assert.match(bridgeClient, /getBridgeExecution/);
+  assert.match(bridgeRoute, /listBridgeWorkflows/);
+  assert.match(progress, /workflowExecutionEvents/);
+  assert.match(bindingRoute, /bridgeWorkflowId/);
+  assert.match(bindingRoute, /workflowVersions/);
+  assert.match(schema, /workflowExecutionEvents/);
+  assert.match(migration, /workflow_execution_events/);
+  assert.match(center, /当前节点/);
+  assert.match(center, /节点进度/);
+  assert.match(center, /兼容模式/);
 });
 
 test("runs bound image-to-video workflows from tests and storyboard shots", async () => {

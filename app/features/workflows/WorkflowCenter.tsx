@@ -9,7 +9,8 @@ type WorkflowNode = { class_type?: string; inputs?: Record<string, unknown>; _me
 type WorkflowDocument = Record<string, WorkflowNode>;
 type InputContract = Record<string, { nodeId: string; input: string }>;
 type OutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json" };
-type WorkflowBinding = { id: string; capability: string; name: string; inputContract: InputContract; outputContract: OutputContract; enabled: boolean };
+type WorkflowBinding = { id: string; capability: string; name: string; sourceType?: string; sourceWorkflowId?: string | null; sourceVersion?: string | null; inputContract: InputContract; outputContract: OutputContract; enabled: boolean };
+type ExecutionProgress = { source: "bridge"; overall: number; stage: string; currentNodeId: string | null; currentNodeTitle: string | null; nodeValue: number | null; nodeMax: number | null; completedNodes: number; totalNodes: number; cachedNodes: number; lastSequence: number };
 type WorkflowTestRun = {
   id: string;
   status: string;
@@ -27,6 +28,8 @@ type SparkWorkflow = {
   suggestedLabel: string;
   outputNodeTypes: string[];
 };
+type BridgeWorkflow = { id: string; name: string; latestVersion: string; updatedAt: number; nodeCount: number; nodes: Array<{ id: string; classType: string; title: string; weight: number }> };
+type BridgeState = { installed: boolean; version: string | null; authorized: boolean };
 
 const MAX_TEST_FRAME_BYTES = 15 * 1024 * 1024;
 
@@ -40,6 +43,7 @@ const inputAliases: Record<string, string[]> = {
   aspectRatio: ["aspect_ratio", "ratio"],
   stylePreset: ["style_preset", "style"],
   duration: ["duration", "seconds", "length", "frames"],
+  promptEnhance: ["prompt_enhance", "enhance_prompt", "enhance", "value"],
   text: ["text", "prompt"],
   voiceReference: ["voice_reference", "reference_audio", "audio"],
   voiceDescription: ["voice_description", "description", "prompt"],
@@ -75,6 +79,7 @@ function scoreInput(definition: WorkflowInputDefinition, inputName: string, node
   const semanticTitles: Partial<Record<string, RegExp>> = {
     prompt: /(^|\s)prompt($|\s)|提示词|动作描述/,
     duration: /(^|\s)duration($|\s)|时长/,
+    promptEnhance: /prompt.?enhance|enhance.?prompt|提示词增强|提示增强/,
     aspectRatio: /aspect.?ratio|画幅|宽高比/,
   };
   if (semanticTitles[definition.key]?.test(title) && /^(value|text|image|audio|video)$/.test(normalized)) score += 180;
@@ -145,6 +150,9 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const [selectedKey, setSelectedKey] = useState("storyboard_frame");
   const [connection, setConnection] = useState<ConnectionState | null>(null);
   const [sparkWorkflows, setSparkWorkflows] = useState<SparkWorkflow[]>([]);
+  const [bridge, setBridge] = useState<BridgeState | null>(null);
+  const [bridgeWorkflows, setBridgeWorkflows] = useState<BridgeWorkflow[]>([]);
+  const [selectedBridgeWorkflow, setSelectedBridgeWorkflow] = useState<BridgeWorkflow | null>(null);
   const [sparkLoading, setSparkLoading] = useState(true);
   const [selectedSparkName, setSelectedSparkName] = useState("");
   const [testing, setTesting] = useState(false);
@@ -163,6 +171,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const [testState, setTestState] = useState("");
   const [testProgress, setTestProgress] = useState(0);
   const [testFailed, setTestFailed] = useState(false);
+  const [testNodeProgress, setTestNodeProgress] = useState<ExecutionProgress | null>(null);
   const [testResultUrl, setTestResultUrl] = useState<string | null>(null);
   const [testRuns, setTestRuns] = useState<WorkflowTestRun[]>([]);
   const [testHistoryLoading, setTestHistoryLoading] = useState(false);
@@ -189,15 +198,19 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       fetch("/api/workflows/requirements", { cache: "no-store" }),
       fetch("/api/workflows/bindings", { cache: "no-store" }),
       fetch("/api/workflows/connection-test", { cache: "no-store" }),
-    ]).then(async ([requirementsResponse, bindingsResponse, connectionResponse]) => {
+      fetch("/api/workflows/bridge", { cache: "no-store" }),
+    ]).then(async ([requirementsResponse, bindingsResponse, connectionResponse, bridgeResponse]) => {
       if (!requirementsResponse.ok || !bindingsResponse.ok) throw new Error("工作引擎配置加载失败");
       const requirements = await requirementsResponse.json() as { capabilities: WorkflowCapabilityInfo[] };
       const savedBindings = await bindingsResponse.json() as { bindings: WorkflowBinding[] };
       const connectionResult = await connectionResponse.json() as ConnectionState;
+      const bridgeResult = await bridgeResponse.json() as { bridge?: BridgeState; workflows?: BridgeWorkflow[] };
       if (cancelled) return;
       setCapabilities(requirements.capabilities);
       setBindings(savedBindings.bindings);
       setConnection(connectionResult);
+      setBridge(bridgeResult.bridge ?? null);
+      setBridgeWorkflows(bridgeResult.workflows ?? []);
       const current = savedBindings.bindings.find((item) => item.capability === "storyboard_frame");
       setBindingName(current?.name ?? "分镜首帧工作流");
       setInputContract(current?.inputContract ?? {});
@@ -221,7 +234,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     let timer = 0;
     const poll = async () => {
       const response = await fetch(`/api/workflows/test-runs/${testRunId}`, { cache: "no-store" });
-      let data: { run?: { status: string; errorMessage?: string; result?: { outputUrl?: string; durationSeconds?: number | null } }; error?: { message?: string } };
+      let data: { run?: { status: string; errorMessage?: string; progress?: ExecutionProgress | null; result?: { outputUrl?: string; durationSeconds?: number | null } }; error?: { message?: string } };
       try {
         data = await readApiJson<typeof data>(response);
         if (!response.ok) throw new Error(data.error?.message ?? `测试状态读取失败（${response.status}）`);
@@ -233,9 +246,16 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
         return;
       }
       if (cancelled || !data.run) return;
+      if (data.run.progress?.source === "bridge") {
+        setTestNodeProgress(data.run.progress);
+        setTestProgress(data.run.progress.overall);
+        setTestState(data.run.progress.stage);
+      }
       if (["submitting", "queued", "running"].includes(data.run.status)) {
-        setTestState(data.run.status === "running" ? "Spark 正在生成视频…" : "任务已进入 Spark 队列…");
-        setTestProgress(data.run.status === "running" ? 72 : 42);
+        if (!data.run.progress) {
+          setTestState(data.run.status === "running" ? "Spark 正在生成视频（桥接器未上报节点进度）…" : "任务已进入 Spark 队列…");
+          setTestProgress(data.run.status === "running" ? 72 : 42);
+        }
         setTestFailed(false);
         timer = window.setTimeout(poll, 1800);
         return;
@@ -245,6 +265,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
         setTestResultUrl(`${data.run.result.outputUrl}?t=${Date.now()}`);
         setTestState(data.run.result.durationSeconds ? `测试成功，已生成 ${data.run.result.durationSeconds.toFixed(2)} 秒视频` : "测试成功，工作流可以用于正式创作");
         setTestProgress(100);
+        setTestNodeProgress((current) => current ? { ...current, overall: 100, stage: "视频已返回" } : null);
         setTestFailed(false);
       } else {
         setTestState(`测试失败：${describeTestError(data.run.errorMessage)}`);
@@ -304,6 +325,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setWorkflow(null);
     setWorkflowFileName("");
     setSelectedSparkName("");
+    setSelectedBridgeWorkflow(null);
     setNotice("");
     setEditingBinding(!current);
     setTestFrame(null);
@@ -311,6 +333,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setTestState("");
     setTestProgress(0);
     setTestFailed(false);
+    setTestNodeProgress(null);
     setTestResultUrl(null);
     setTestRuns([]);
     if (current && key === "image_to_video") void loadTestRuns(current.id);
@@ -335,6 +358,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       const parsed = JSON.parse(await file.text()) as unknown;
       if (!isApiWorkflow(parsed)) throw new Error("这是可视化工作流，请在 ComfyUI 中导出「API 格式」后再上传");
       setSelectedSparkName("");
+      setSelectedBridgeWorkflow(null);
       applyWorkflow(parsed, file.name, selected);
     } catch (error) {
       setWorkflow(null);
@@ -344,6 +368,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   };
 
   const inspectSparkWorkflow = async (item: SparkWorkflow) => {
+    setSelectedBridgeWorkflow(null);
     setSelectedSparkName(item.name);
     setWorkflow(null);
     setWorkflowFileName("");
@@ -364,6 +389,22 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     }
     setSelectedKey(targetCapability.key);
     applyWorkflow(data.workflow, item.name, targetCapability);
+  };
+
+  const inspectBridgeWorkflow = async (item: BridgeWorkflow) => {
+    setSelectedBridgeWorkflow(item);
+    setSelectedSparkName("");
+    setWorkflow(null);
+    setNotice(`正在从桥接器读取“${item.name}”…`);
+    try {
+      const response = await fetch(`/api/workflows/bridge?workflowId=${encodeURIComponent(item.id)}&version=${encodeURIComponent(item.latestVersion)}`, { cache: "no-store" });
+      const data = await response.json() as { api?: unknown; error?: { message?: string } };
+      if (!response.ok || !isApiWorkflow(data.api) || !selected) throw new Error(data.error?.message ?? "桥接工作流读取失败");
+      applyWorkflow(data.api, item.name, selected);
+      setNotice(`已固定工作流版本 ${item.latestVersion}，确认创作字段后即可启用`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "桥接工作流读取失败");
+    }
   };
 
   const mapInput = (key: string, value: string) => {
@@ -389,7 +430,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       const response = await fetch("/api/workflows/bindings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ capability: selected.key, name: bindingName, workflow, inputContract, outputContract: { nodeId: outputNodeId, output: outputCollection, mediaType: selected.outputs[0].mediaType } satisfies OutputContract, enabled: true }),
+        body: JSON.stringify({ capability: selected.key, name: bindingName, workflow: selectedBridgeWorkflow ? undefined : workflow, bridgeWorkflowId: selectedBridgeWorkflow?.id, bridgeVersion: selectedBridgeWorkflow?.latestVersion, inputContract, outputContract: { nodeId: outputNodeId, output: outputCollection, mediaType: selected.outputs[0].mediaType } satisfies OutputContract, enabled: true }),
       });
       const data = await response.json() as { binding?: WorkflowBinding; error?: { message?: string } };
       if (!response.ok || !data.binding) throw new Error(data.error?.message ?? "工作流保存失败");
@@ -409,8 +450,14 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
 
   const testConnection = async () => {
     setTesting(true);
-    const response = await fetch("/api/workflows/connection-test", { cache: "no-store" });
-    setConnection(await response.json() as ConnectionState);
+    const [connectionResponse, bridgeResponse] = await Promise.all([
+      fetch("/api/workflows/connection-test", { cache: "no-store" }),
+      fetch("/api/workflows/bridge", { cache: "no-store" }),
+    ]);
+    setConnection(await connectionResponse.json() as ConnectionState);
+    const bridgeResult = await bridgeResponse.json() as { bridge?: BridgeState; workflows?: BridgeWorkflow[] };
+    setBridge(bridgeResult.bridge ?? null);
+    setBridgeWorkflows(bridgeResult.workflows ?? []);
     setTesting(false);
   };
 
@@ -428,12 +475,14 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setTestResultUrl(null);
     setTestState("正在上传首帧并提交测试…");
     setTestProgress(8);
+    setTestNodeProgress(null);
     setTestFailed(false);
     try {
       const form = new FormData();
       form.append("firstFrame", testFrame);
       form.append("prompt", testPrompt);
       form.append("duration", String(testDuration));
+      form.append("promptEnhance", "true");
       const response = await fetch(`/api/workflows/bindings/${binding.id}/test`, { method: "POST", body: form });
       const data = await readApiJson<{ run?: { id: string }; error?: { message?: string; details?: { reason?: string } } }>(response);
       if (!response.ok || !data.run) throw new Error(data.error?.details?.reason ?? data.error?.message ?? "无法启动测试");
@@ -452,7 +501,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       <div className="workflow-page page-scroll">
         <header className="workflow-heading">
           <div><p className="eyebrow">工作引擎</p><h1>连接一次，创作时直接使用</h1><p>系统自动发现 Spark 工作流并推荐用途；创作者不会看到 ComfyUI 节点。</p></div>
-          <div className={`engine-status ${connection?.connected ? "connected" : ""}`}><i /><div><b>{connection?.connected ? "Spark 已连接" : connection?.configured ? "Spark 连接异常" : "等待配置 Spark"}</b><span>{connection?.message ?? "正在检查连接…"}{connection?.connected ? ` · ${connection.deviceCount ?? 0} 个设备` : ""}</span></div><AppButton onClick={testConnection} disabled={testing}>{testing ? "检测中" : "检测连接"}</AppButton></div>
+          <div className={`engine-status ${connection?.connected && bridge?.authorized ? "connected" : ""}`}><i /><div><b>{bridge?.authorized ? "小飞象桥接器已连接" : bridge?.installed ? "桥接器需要密钥" : connection?.connected ? "Spark 已连接，等待安装桥接器" : connection?.configured ? "Spark 连接异常" : "等待配置 Spark"}</b><span>{bridge?.authorized ? `版本 ${bridge.version} · 已同步 ${bridgeWorkflows.length} 个工作流` : connection?.message ?? "正在检查连接…"}{connection?.connected ? ` · ${connection.deviceCount ?? 0} 个设备` : ""}</span></div><AppButton onClick={testConnection} disabled={testing}>{testing ? "检测中" : "检测连接"}</AppButton></div>
         </header>
 
         <div className="workflow-layout">
@@ -485,6 +534,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
                   <div><b>{testHistoryLoading ? "正在恢复测试记录…" : testState || "选择首帧后即可开始测试"}</b><span>{testProgress > 0 ? `${testProgress}%` : "等待开始"}</span></div>
                   <div className="test-progress-track"><i style={{ width: `${testProgress}%` }} /></div>
                   <ol>{testSteps.map((step, index) => <li key={step.label} className={testProgress >= step.threshold ? "done" : testProgress > 0 && index === activeTestStep ? "active" : ""}><i>{testProgress >= step.threshold ? "✓" : ""}</i><span>{step.label}</span></li>)}</ol>
+                  {testNodeProgress && <div className="node-progress-detail"><div><span>当前节点</span><b>{testNodeProgress.currentNodeTitle ?? "等待节点"}</b><code>#{testNodeProgress.currentNodeId ?? "-"}</code></div><div><span>节点进度</span><b>{testNodeProgress.nodeMax ? `${testNodeProgress.nodeValue ?? 0} / ${testNodeProgress.nodeMax}` : "执行中"}</b></div><div><span>完成节点</span><b>{testNodeProgress.completedNodes} / {testNodeProgress.totalNodes}</b>{testNodeProgress.cachedNodes > 0 && <small>缓存 {testNodeProgress.cachedNodes}</small>}</div></div>}
                 </div>
                 <div className="workflow-test-layout">
                   <div className="workflow-test-form">
@@ -501,19 +551,13 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
               {showBindingEditor && <>
 
               <section className="workflow-section spark-library-section">
-                <div className="workflow-section-title"><b>1. 从 Spark 选择已有工作流</b><span>{sparkLoading ? "正在读取…" : `发现 ${sparkWorkflows.length} 个工作流`}</span></div>
-                <div className="spark-workflow-grid">{sparkWorkflows.map((item) => <button key={item.name} className={selectedSparkName === item.name ? "active" : ""} onClick={() => void inspectSparkWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className={`workflow-format ${item.format}`}>{item.format === "api" ? "执行版" : item.format === "editor" ? "可视化版" : "无法识别"}</span></div><p>建议用于：{item.suggestedLabel}</p><small>{item.nodeCount} 个节点{item.format === "editor" ? " · 需导出 API 格式" : " · 可直接绑定"}</small></button>)}</div>
-                {!sparkLoading && !sparkWorkflows.length && <div className="workflow-empty">Spark 上还没有保存的工作流</div>}
-                {selectedSparkName && sparkWorkflows.find((item) => item.name === selectedSparkName)?.format === "editor" && <div className="format-guidance"><span>!</span><div><b>当前是可视化编辑版，不能直接执行</b><p>在 ComfyUI 中打开“{selectedSparkName.replace(/\.json$/i, "")}”，选择导出 API 格式，然后上传到下一步。只需做一次。</p></div>{connection?.serverUrl && <a href={connection.serverUrl} target="_blank" rel="noreferrer">打开 ComfyUI ↗</a>}</div>}
-              </section>
-
-              <section className="workflow-section">
-                <div className="workflow-section-title"><b>2. 上传执行版</b><span>系统会自动识别输入和最终输出</span></div>
-                <label className={`workflow-dropzone ${workflow ? "has-file" : ""}`}><input type="file" accept="application/json,.json" onChange={(event) => void uploadWorkflow(event.target.files?.[0])} /><strong>{workflow ? "✓" : "＋"}</strong><div><b>{workflowFileName || "拖入从 ComfyUI 导出的 API 格式 JSON"}</b><span>{workflow ? `已识别 ${nodes.length} 个执行节点，并完成自动映射` : "不需要修改 JSON，也不需要填写节点编号"}</span></div></label>
+                <div className="workflow-section-title"><b>1. 从 ComfyUI 选择工作流</b><span>{bridge?.authorized ? `已同步 ${bridgeWorkflows.length} 个` : "需要小飞象桥接器"}</span></div>
+                {bridge?.authorized ? <><div className="spark-workflow-grid">{bridgeWorkflows.map((item) => <button key={item.id} className={selectedBridgeWorkflow?.id === item.id ? "active" : ""} onClick={() => void inspectBridgeWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className="workflow-format api">已同步</span></div><p>固定版本：{item.latestVersion}</p><small>{item.nodeCount} 个执行节点 · 可直接绑定</small></button>)}</div>{!bridgeWorkflows.length && <div className="workflow-empty">在 ComfyUI 中打开并运行一次工作流，它会自动出现在这里</div>}</> : <div className="format-guidance"><span>!</span><div><b>{bridge?.installed ? "桥接器已安装，但小飞象与 ComfyUI 的密钥不一致" : "Spark 尚未安装小飞象工作流桥接器"}</b><p>安装后，ComfyUI 中已有工作流会自动同步；生成时会回传真实节点和百分比。</p></div>{connection?.serverUrl && <a href={connection.serverUrl} target="_blank" rel="noreferrer">打开 ComfyUI ↗</a>}</div>}
+                <details className="compat-workflow-source"><summary>兼容模式：查看 Spark 文件或上传 API JSON</summary><div className="spark-workflow-grid">{sparkWorkflows.map((item) => <button key={item.name} className={selectedSparkName === item.name ? "active" : ""} onClick={() => void inspectSparkWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className={`workflow-format ${item.format}`}>{item.format === "api" ? "执行版" : item.format === "editor" ? "可视化版" : "无法识别"}</span></div><p>建议用于：{item.suggestedLabel}</p><small>{item.nodeCount} 个节点</small></button>)}</div>{sparkLoading && <div className="workflow-empty">正在读取 Spark 文件…</div>}<label className={`workflow-dropzone ${workflow && !selectedBridgeWorkflow ? "has-file" : ""}`}><input type="file" accept="application/json,.json" onChange={(event) => void uploadWorkflow(event.target.files?.[0])} /><strong>{workflow && !selectedBridgeWorkflow ? "✓" : "＋"}</strong><div><b>{workflow && !selectedBridgeWorkflow ? workflowFileName : "上传 API 格式 JSON"}</b><span>仅用于桥接器尚未安装时的兼容操作</span></div></label></details>
               </section>
 
               <section className={`workflow-section ${workflow ? "" : "section-disabled"}`}>
-                <div className="workflow-section-title"><b>3. 确认创作字段</b><span>{workflow ? `${mappedCount}/${selected.inputs.length} 项已识别` : "上传执行版后自动出现"}</span></div>
+                <div className="workflow-section-title"><b>2. 确认创作字段</b><span>{workflow ? `${mappedCount}/${selected.inputs.length} 项已识别` : "选择工作流后自动出现"}</span></div>
                 <div className="contract-grid">{selected.inputs.map((input) => {
                   const current = inputContract[input.key];
                   const value = current ? `${current.nodeId}::${current.input}` : "";
@@ -522,7 +566,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
               </section>
 
               <section className={`workflow-section ${workflow ? "" : "section-disabled"}`}>
-                <div className="workflow-section-title"><b>4. 确认生成结果</b><span>完成后自动回到对应资产或分镜</span></div>
+                <div className="workflow-section-title"><b>3. 确认生成结果</b><span>完成后自动回到对应资产或分镜</span></div>
                 <div className="output-contract guided-output"><label><span>最终输出</span><select value={outputNodeId} disabled={!workflow} onChange={(event) => setOutputNodeId(event.target.value)}><option value="">选择最终输出节点</option>{nodes.map(([nodeId, node]) => <option key={nodeId} value={nodeId}>{nodeLabel(nodeId, node)}</option>)}</select></label><div><span>归档位置</span><b>{selected.outputs[0].label} · 自动归档</b></div><details><summary>高级设置</summary><label>结果字段<input value={outputCollection} disabled={!workflow} onChange={(event) => setOutputCollection(event.target.value)} /></label></details></div>
               </section>
 

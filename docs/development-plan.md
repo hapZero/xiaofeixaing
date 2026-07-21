@@ -1,0 +1,84 @@
+# 小飞象产品开发计划
+
+## 产品原则
+
+- 前台创作流程对齐小云雀：剧本大纲 → 资产库 → 分集视频 → 分镜编辑 → 合成导出。
+- ComfyUI 是隐藏的执行层，不把节点、工作流 JSON 和运行细节暴露给创作者。
+- 角色形象、角色音色、场景声音场和关键道具都是项目级资产，分镜只引用，不复制。
+- 所有生成均以任务形式执行，必须可追踪、可重试、可恢复、可查看历史版本。
+- 商用数据使用服务端数据库与对象存储，浏览器状态只用于临时交互。
+
+## 已确认的商用技术栈
+
+- Web：React、TypeScript、Next.js 兼容前端。
+- 业务 API：Node.js、NestJS。
+- 数据库：PostgreSQL、Drizzle ORM。
+- 任务系统：Redis、BullMQ、独立 Worker。
+- 媒体：S3 兼容对象存储，支持 OSS、COS、MinIO 或 R2。
+- GPU 执行：Spark 上的 ComfyUI。
+- 实时进度：SSE 为主，必要时使用 WebSocket。
+- 合成：FFmpeg。
+- 认证：手机号验证码、短期 Access Token、可轮换 Refresh Token。
+- 监控：结构化日志、Sentry、OpenTelemetry。
+
+## 与技术栈一致的开发顺序
+
+### 1. 工程与运行边界
+
+- 建立 monorepo：`apps/web`、`apps/api`、`apps/worker`、`packages/domain`、`packages/contracts`、`packages/ui`、`packages/comfyui-client`。
+- 保留当前原型作为 Web 产品基线，不再把新业务堆入单页文件。
+- 建立统一配置、错误码、日志、校验、测试和代码规范。
+
+### 2. 核心基础设施
+
+- 建立 PostgreSQL 数据库、迁移和 repository 层。
+- 建立 Redis、BullMQ 队列和 Worker 生命周期。
+- 建立 S3 媒体存储适配器、上传与签名访问。
+- 建立本地 Docker Compose 开发环境和环境变量规范。
+
+### 3. 账户与项目纵向闭环
+
+- 手机号验证码登录、会话续期、退出和服务端权限校验。
+- 项目创建、项目列表、项目设置、自动保存和用户数据隔离。
+- 用这一条闭环验证 Web → API → PostgreSQL → Redis → Worker 的完整链路。
+
+### 4. ComfyUI 执行底座
+
+- 工作流能力注册、输入输出映射和版本管理。
+- API 创建任务，BullMQ 排队，Worker 调用 Spark/ComfyUI。
+- 进度回传、超时、取消、重试、幂等、失败恢复和结果入库。
+
+### 5. 剧本与资产
+
+- 上传/粘贴剧本、AI 生剧本、分集编辑、资产拆解和剧本锁定。
+- 角色与多形态、固定音色、场景、道具、素材、确认状态和项目画布。
+
+### 6. 分镜、视频与声音连续性
+
+- 分镜脚本、资产引用、片段版本、历史版本和批量生成。
+- 角色音色引用、口型同步、场景声音场、环境声连续和混音策略。
+
+### 7. 合成与交付
+
+- FFmpeg 单集合成、字幕、配乐、整剧导出、下载和发布记录。
+
+### 8. 商用保障
+
+- 权限、审计、限流、监控、告警、备份和数据恢复。
+- 运营后台、用量统计；收费模块按产品决定后接入。
+
+## 当前开发位置
+
+- 已完成：产品原型、领域数据初稿、项目/画布接口、ComfyUI 能力接口和自由画布持久化验证。
+- 正在进行：拆分原型前端，建立清晰的 feature/component 边界。
+- 紧接着执行：建立 NestJS API、PostgreSQL、Redis/BullMQ 和 Worker 的 monorepo 基础设施。
+- 当前 D1/R2 版本只作为在线原型和接口验证环境，不作为商用最终数据底座。
+
+## 代码约束
+
+- 页面只负责组合，业务逻辑放在 feature/service 中。
+- 数据访问只通过 repository，外部服务只通过 integration adapter。
+- 禁止在 UI 中直接调用 ComfyUI。
+- 禁止把项目数据保存为浏览器端权威状态。
+- 状态与错误码使用集中定义，避免散落字符串。
+- 核心服务必须有测试；每次提交必须通过 lint、build 和 test。

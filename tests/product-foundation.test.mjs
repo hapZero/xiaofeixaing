@@ -5,19 +5,35 @@ import test from "node:test";
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
 test("ships the approved Xiaofeixiang creation flow", async () => {
-  const [page, layout, packageJson] = await Promise.all([
+  const [page, studio, canvas, assets, layout, packageJson] = await Promise.all([
     read("../app/page.tsx"),
+    read("../app/features/studio/StudioApp.tsx"),
+    read("../app/features/canvas/CanvasWorkspace.tsx"),
+    read("../app/features/assets/AssetsPage.tsx"),
     read("../app/layout.tsx"),
     read("../package.json"),
   ]);
-  assert.match(page, /function FreeCanvasPage/);
-  assert.match(page, /function CanvasWorkspace/);
-  assert.match(page, /FlowCanvasLines/);
-  assert.match(page, /进入自由画布/);
-  assert.match(page, /固定角色音色/);
+  assert.match(page, /StudioApp/);
+  assert.match(studio, /FreeCanvasPage/);
+  assert.match(canvas, /function CanvasWorkspace/);
+  assert.match(canvas, /FlowCanvasLines/);
+  assert.match(canvas, /已自动保存/);
+  assert.match(assets, /固定角色音色/);
   assert.match(layout, /小飞象/);
   assert.match(packageJson, /xiaofeixiang-studio/);
   assert.doesNotMatch(page, /SkeletonPreview/);
+});
+
+test("keeps the frontend entrypoint thin and features modular", async () => {
+  const [page, plan] = await Promise.all([
+    read("../app/page.tsx"),
+    read("../docs/development-plan.md"),
+  ]);
+  assert.ok(page.split("\n").length < 20);
+  assert.match(plan, /apps\/web/);
+  assert.match(plan, /PostgreSQL/);
+  assert.match(plan, /Redis、BullMQ/);
+  assert.match(plan, /当前 D1\/R2 版本只作为在线原型/);
 });
 
 test("defines durable product data and ComfyUI job boundaries", async () => {

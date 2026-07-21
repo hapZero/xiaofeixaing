@@ -61,6 +61,7 @@ export const workflowBindings = pgTable("workflow_bindings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("workflow_bindings_owner_capability_name_uidx").on(table.ownerId, table.capability, table.name),
+  uniqueIndex("workflow_bindings_owner_source_uidx").on(table.ownerId, table.sourceWorkflowId),
   index("workflow_bindings_capability_enabled_idx").on(table.capability, table.enabled),
 ]);
 

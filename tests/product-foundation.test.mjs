@@ -162,18 +162,22 @@ test("syncs versioned ComfyUI workflows and persists real node progress", async 
   assert.match(bridgeRoute, /listBridgeWorkflows/);
   assert.match(progress, /workflowExecutionEvents/);
   assert.match(bindingRoute, /bridgeWorkflowId/);
+  assert.match(bindingRoute, /WORKFLOW_ALREADY_BOUND/);
   assert.match(bindingRoute, /workflowVersions/);
   assert.match(schema, /workflowExecutionEvents/);
   assert.match(migration, /workflow_execution_events/);
   assert.match(center, /当前节点/);
   assert.match(center, /节点进度/);
   assert.match(center, /备用方式/);
-  assert.match(center, /visibleLibraryWorkflows/);
-  assert.match(center, /完整显示“工作流 → 浏览”中的内容/);
+  assert.match(center, /availableLibraryWorkflows/);
+  assert.match(center, /occupiedWorkflowIds/);
+  assert.match(center, /已被其他能力使用的不会显示/);
+  assert.match(center, /workflow-picker/);
+  assert.doesNotMatch(center, /可直接绑定|可选择/);
   assert.match(center, /selectLibraryWorkflow/);
 });
 
-test("runs bound image-to-video workflows from tests and storyboard shots", async () => {
+test("runs every bound workflow from tests and image-to-video from storyboard shots", async () => {
   const [testRoute, testStatusRoute, testOutputRoute, jobsRoute, editor, workflowCenter, migration, nextConfig] = await Promise.all([
     read("../app/api/workflows/bindings/[bindingId]/test/route.ts"),
     read("../app/api/workflows/test-runs/[runId]/route.ts"),
@@ -196,6 +200,8 @@ test("runs bound image-to-video workflows from tests and storyboard shots", asyn
   assert.match(editor, /生成分镜视频/);
   assert.match(workflowCenter, /执行版已保存并启用/);
   assert.match(workflowCenter, /立即测试已绑定工作流/);
+  assert.match(workflowCenter, /selected\.inputs\.map/);
+  assert.doesNotMatch(workflowCenter, /selectedKey === "image_to_video"/);
   assert.match(workflowCenter, /aria-live="polite"/);
   assert.match(workflowCenter, /testProgress/);
   assert.match(workflowCenter, /testFailed/);

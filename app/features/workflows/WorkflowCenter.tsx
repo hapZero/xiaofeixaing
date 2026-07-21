@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { StudioShell } from "../../components/layout/StudioShell";
 import { AppButton } from "../../components/ui";
 import type { View, WorkflowCapabilityInfo, WorkflowInputDefinition } from "../studio/types";
@@ -16,8 +17,9 @@ type WorkflowTestRun = {
   status: string;
   errorMessage?: string | null;
   createdAt: string | number | Date;
-  result?: { outputUrl?: string; durationSeconds?: number | null } | null;
+  result?: { outputUrl?: string; durationSeconds?: number | null; mediaType?: "image" | "video" | "audio" | "json" } | null;
 };
+type TestInputValue = string | boolean | File | null;
 type ConnectionState = { configured: boolean; connected: boolean; deviceCount?: number; system?: string | null; serverUrl?: string | null; message: string };
 type SparkWorkflow = {
   name: string;
@@ -68,6 +70,14 @@ function defaultOutputCollection(mediaType: string) {
   if (mediaType === "audio") return "audio";
   if (mediaType === "json") return "result";
   return "images";
+}
+
+function defaultTestInputs(capability: WorkflowCapabilityInfo | null): Record<string, TestInputValue> {
+  return Object.fromEntries((capability?.inputs ?? []).map((input) => {
+    if (input.valueType === "boolean") return [input.key, true];
+    if (input.key === "duration") return [input.key, "5"];
+    return [input.key, ""];
+  }));
 }
 
 function scoreInput(definition: WorkflowInputDefinition, inputName: string, node: WorkflowNode) {
@@ -160,7 +170,6 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const [selectedBridgeWorkflow, setSelectedBridgeWorkflow] = useState<BridgeWorkflow | null>(null);
   const [sparkLoading, setSparkLoading] = useState(true);
   const [selectedSparkName, setSelectedSparkName] = useState("");
-  const [workflowSearch, setWorkflowSearch] = useState("");
   const [preparingWorkflowName, setPreparingWorkflowName] = useState("");
   const [testing, setTesting] = useState(false);
   const [workflow, setWorkflow] = useState<WorkflowDocument | null>(null);
@@ -171,15 +180,14 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const [outputCollection, setOutputCollection] = useState("images");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
-  const [testFrame, setTestFrame] = useState<File | null>(null);
-  const [testPrompt, setTestPrompt] = useState("人物缓慢转头看向窗外，镜头轻微推进，动作自然流畅");
-  const [testDuration, setTestDuration] = useState(5);
+  const [testInputs, setTestInputs] = useState<Record<string, TestInputValue>>({});
   const [testRunId, setTestRunId] = useState<string | null>(null);
   const [testState, setTestState] = useState("");
   const [testProgress, setTestProgress] = useState(0);
   const [testFailed, setTestFailed] = useState(false);
   const [testNodeProgress, setTestNodeProgress] = useState<ExecutionProgress | null>(null);
   const [testResultUrl, setTestResultUrl] = useState<string | null>(null);
+  const [testResultMediaType, setTestResultMediaType] = useState<"image" | "video" | "audio" | "json">("video");
   const [testRuns, setTestRuns] = useState<WorkflowTestRun[]>([]);
   const [testHistoryLoading, setTestHistoryLoading] = useState(false);
   const [editingBinding, setEditingBinding] = useState(false);
@@ -188,20 +196,25 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const binding = bindings.find((item) => item.capability === selectedKey) ?? null;
   const nodes = useMemo(() => Object.entries(workflow ?? {}), [workflow]);
   const bridgeWorkflowByName = useMemo(() => new Map(bridgeWorkflows.map((item) => [normalizedWorkflowName(item.name), item])), [bridgeWorkflows]);
-  const visibleLibraryWorkflows = useMemo(() => {
-    const query = workflowSearch.trim().toLowerCase();
-    const workflows = query ? sparkWorkflows.filter((item) => item.name.toLowerCase().includes(query)) : sparkWorkflows;
-    return [...workflows].sort((a, b) => Number(b.suggestedCapability === selectedKey) - Number(a.suggestedCapability === selectedKey) || a.name.localeCompare(b.name, "zh-CN"));
-  }, [selectedKey, sparkWorkflows, workflowSearch]);
+  const occupiedWorkflowIds = useMemo(() => new Set(bindings.filter((item) => item.capability !== selectedKey && item.sourceWorkflowId).map((item) => item.sourceWorkflowId as string)), [bindings, selectedKey]);
+  const occupiedBindings = useMemo(() => bindings.filter((item) => item.capability !== selectedKey), [bindings, selectedKey]);
+  const availableLibraryWorkflows = useMemo(() => sparkWorkflows
+    .filter((item) => {
+      const bridged = bridgeWorkflowByName.get(normalizedWorkflowName(item.name));
+      const normalizedName = normalizedWorkflowName(item.name);
+      const nameAlreadyUsed = occupiedBindings.some((bindingItem) => normalizedWorkflowName(bindingItem.name).endsWith(normalizedName));
+      return !nameAlreadyUsed && (!bridged || !occupiedWorkflowIds.has(bridged.id));
+    })
+    .sort((a, b) => Number(b.suggestedCapability === selectedKey) - Number(a.suggestedCapability === selectedKey) || a.name.localeCompare(b.name, "zh-CN")), [bridgeWorkflowByName, occupiedBindings, occupiedWorkflowIds, selectedKey, sparkWorkflows]);
   const missingRequired = selected?.inputs.filter((input) => input.required && !inputContract[input.key]) ?? [];
   const mappedCount = selected?.inputs.filter((input) => Boolean(inputContract[input.key])).length ?? 0;
   const readyToSave = Boolean(workflow && outputNodeId && outputCollection && missingRequired.length === 0);
   const showBindingEditor = !binding || editingBinding;
   const testSteps = [
-    { label: "上传首帧", threshold: 20 },
+    { label: "提交输入", threshold: 20 },
     { label: "进入队列", threshold: 40 },
-    { label: "Spark 生成", threshold: 72 },
-    { label: "返回视频", threshold: 100 },
+    { label: "Spark 执行", threshold: 72 },
+    { label: "返回结果", threshold: 100 },
   ];
   const activeTestStep = testProgress < 40 ? 0 : testProgress < 72 ? 1 : testProgress < 100 ? 2 : 3;
 
@@ -225,10 +238,12 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       setBridge(bridgeResult.bridge ?? null);
       setBridgeWorkflows(bridgeResult.workflows ?? []);
       const current = savedBindings.bindings.find((item) => item.capability === "storyboard_frame");
+      const currentCapability = requirements.capabilities.find((item) => item.key === "storyboard_frame") ?? null;
       setBindingName(current?.name ?? "分镜首帧工作流");
       setInputContract(current?.inputContract ?? {});
       setOutputNodeId(current?.outputContract.nodeId ?? "");
       setOutputCollection(current?.outputContract.output ?? "images");
+      setTestInputs(defaultTestInputs(currentCapability));
     }).catch((error: unknown) => { if (!cancelled) setNotice(error instanceof Error ? error.message : "工作引擎配置加载失败"); });
     fetch("/api/workflows/spark-library", { cache: "no-store" })
       .then(async (response) => {
@@ -247,7 +262,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     let timer = 0;
     const poll = async () => {
       const response = await fetch(`/api/workflows/test-runs/${testRunId}`, { cache: "no-store" });
-      let data: { run?: { status: string; errorMessage?: string; progress?: ExecutionProgress | null; result?: { outputUrl?: string; durationSeconds?: number | null } }; error?: { message?: string } };
+      let data: { run?: { status: string; errorMessage?: string; progress?: ExecutionProgress | null; result?: { outputUrl?: string; durationSeconds?: number | null; mediaType?: "image" | "video" | "audio" | "json" } }; error?: { message?: string } };
       try {
         data = await readApiJson<typeof data>(response);
         if (!response.ok) throw new Error(data.error?.message ?? `测试状态读取失败（${response.status}）`);
@@ -266,7 +281,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       }
       if (["submitting", "queued", "running"].includes(data.run.status)) {
         if (!data.run.progress) {
-          setTestState(data.run.status === "running" ? "Spark 正在生成视频（桥接器未上报节点进度）…" : "任务已进入 Spark 队列…");
+          setTestState(data.run.status === "running" ? "Spark 正在执行工作流（桥接器未上报节点进度）…" : "任务已进入 Spark 队列…");
           setTestProgress(data.run.status === "running" ? 72 : 42);
         }
         setTestFailed(false);
@@ -276,9 +291,10 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       setTestRunId(null);
       if (data.run.status === "succeeded" && data.run.result?.outputUrl) {
         setTestResultUrl(`${data.run.result.outputUrl}?t=${Date.now()}`);
+        setTestResultMediaType(data.run.result.mediaType ?? selected?.outputs[0]?.mediaType ?? "video");
         setTestState(data.run.result.durationSeconds ? `测试成功，已生成 ${data.run.result.durationSeconds.toFixed(2)} 秒视频` : "测试成功，工作流可以用于正式创作");
         setTestProgress(100);
-        setTestNodeProgress((current) => current ? { ...current, overall: 100, stage: "视频已返回" } : null);
+        setTestNodeProgress((current) => current ? { ...current, overall: 100, stage: "结果已返回" } : null);
         setTestFailed(false);
       } else {
         setTestState(`测试失败：${describeTestError(data.run.errorMessage)}`);
@@ -287,7 +303,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     };
     timer = window.setTimeout(poll, 900);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [testRunId]);
+  }, [selected?.outputs, testRunId]);
 
   const loadTestRuns = async (bindingId: string) => {
     setTestHistoryLoading(true);
@@ -305,7 +321,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
         setTestResultUrl(null);
       } else if (["submitting", "queued", "running"].includes(latest.status)) {
         setTestRunId(latest.id);
-        setTestState(latest.status === "running" ? "Spark 正在生成视频…" : "任务已进入 Spark 队列…");
+        setTestState(latest.status === "running" ? "Spark 正在执行工作流…" : "任务已进入 Spark 队列…");
         setTestProgress(latest.status === "running" ? 72 : 42);
         setTestFailed(false);
       } else if (latest.status === "succeeded" && latest.result?.outputUrl) {
@@ -313,6 +329,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
         setTestProgress(100);
         setTestFailed(false);
         setTestResultUrl(latest.result.outputUrl);
+        setTestResultMediaType(latest.result.mediaType ?? "video");
       } else {
         setTestState(`最近一次测试失败：${describeTestError(latest.errorMessage)}`);
         setTestProgress(0);
@@ -341,7 +358,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setSelectedBridgeWorkflow(null);
     setNotice("");
     setEditingBinding(!current);
-    setTestFrame(null);
+    setTestInputs(defaultTestInputs(definition ?? null));
     setTestRunId(null);
     setTestState("");
     setTestProgress(0);
@@ -349,7 +366,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setTestNodeProgress(null);
     setTestResultUrl(null);
     setTestRuns([]);
-    if (current && key === "image_to_video") void loadTestRuns(current.id);
+    if (current) void loadTestRuns(current.id);
   };
 
   const applyWorkflow = (document: WorkflowDocument, fileName: string, capability: WorkflowCapabilityInfo) => {
@@ -381,9 +398,8 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   };
 
   const selectLibraryWorkflow = async (item: SparkWorkflow) => {
-    const targetCapability = capabilities.find((capability) => capability.key === (item.suggestedCapability ?? selectedKey)) ?? selected;
+    const targetCapability = selected;
     if (!targetCapability) return;
-    if (targetCapability.key !== selectedKey) chooseCapability(targetCapability.key);
     setEditingBinding(true);
     setSelectedSparkName(item.name);
     const existingBridgeWorkflow = bridgeWorkflowByName.get(normalizedWorkflowName(item.name));
@@ -497,27 +513,43 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   };
 
   const startWorkflowTest = async () => {
-    if (!binding || selectedKey !== "image_to_video" || !testFrame) {
-      setTestState("请先选择一张首帧图片");
+    if (!binding || !selected) {
+      setTestState("请先绑定并启用工作流");
       return;
     }
-    if (testFrame.size > MAX_TEST_FRAME_BYTES) {
-      setTestState("提交失败：首帧不能超过 15 MB");
+    const missingTestInputs = selected.inputs.filter((input) => {
+      const value = testInputs[input.key];
+      return input.required && (value === null || value === undefined || value === "");
+    });
+    if (missingTestInputs.length) {
+      setTestState(`请填写：${missingTestInputs.map((item) => item.label).join("、")}`);
+      setTestProgress(0);
+      setTestFailed(true);
+      return;
+    }
+    const oversized = selected.inputs.find((input) => {
+      const value = testInputs[input.key];
+      return value instanceof File && value.size > MAX_TEST_FRAME_BYTES;
+    });
+    if (oversized) {
+      setTestState(`提交失败：${oversized.label}不能超过 15 MB`);
       setTestProgress(0);
       setTestFailed(true);
       return;
     }
     setTestResultUrl(null);
-    setTestState("正在上传首帧并提交测试…");
+    setTestState("正在提交测试输入…");
     setTestProgress(8);
     setTestNodeProgress(null);
     setTestFailed(false);
     try {
       const form = new FormData();
-      form.append("firstFrame", testFrame);
-      form.append("prompt", testPrompt);
-      form.append("duration", String(testDuration));
-      form.append("promptEnhance", "true");
+      selected.inputs.forEach((input) => {
+        const value = testInputs[input.key];
+        if (value instanceof File) form.append(input.key, value);
+        else if (typeof value === "boolean") form.append(input.key, String(value));
+        else if (typeof value === "string" && value.trim()) form.append(input.key, value);
+      });
       const response = await fetch(`/api/workflows/bindings/${binding.id}/test`, { method: "POST", body: form });
       const data = await readApiJson<{ run?: { id: string }; error?: { message?: string; details?: { reason?: string } } }>(response);
       if (!response.ok || !data.run) throw new Error(data.error?.details?.reason ?? data.error?.message ?? "无法启动测试");
@@ -563,38 +595,44 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
                 <details className="bound-mapping-details"><summary>查看已保存的字段映射</summary><div>{selected.inputs.filter((input) => binding.inputContract[input.key]).map((input) => <p key={input.key}><span>{input.label}</span><code>{binding.inputContract[input.key].nodeId} / {binding.inputContract[input.key].input}</code></p>)}<p><span>最终输出</span><code>{binding.outputContract.nodeId} / {binding.outputContract.output}</code></p></div></details>
               </section>}
 
-              {binding && selectedKey === "image_to_video" && !editingBinding && <section className="workflow-section workflow-test-section">
+              {binding && !editingBinding && <section className="workflow-section workflow-test-section">
                 <div className="workflow-section-title"><b>立即测试已绑定工作流</b><span>真实调用 Spark，不会写入短剧项目</span></div>
                 <div className={`workflow-test-status ${testFailed ? "failed" : ""}`} aria-live="polite">
-                  <div><b>{testHistoryLoading ? "正在恢复测试记录…" : testState || "选择首帧后即可开始测试"}</b><span>{testProgress > 0 ? `${testProgress}%` : "等待开始"}</span></div>
+                  <div><b>{testHistoryLoading ? "正在恢复测试记录…" : testState || "填写测试输入后即可开始"}</b><span>{testProgress > 0 ? `${testProgress}%` : "等待开始"}</span></div>
                   <div className="test-progress-track"><i style={{ width: `${testProgress}%` }} /></div>
                   <ol>{testSteps.map((step, index) => <li key={step.label} className={testProgress >= step.threshold ? "done" : testProgress > 0 && index === activeTestStep ? "active" : ""}><i>{testProgress >= step.threshold ? "✓" : ""}</i><span>{step.label}</span></li>)}</ol>
                   {testNodeProgress && <div className="node-progress-detail"><div><span>当前节点</span><b>{testNodeProgress.currentNodeTitle ?? "等待节点"}</b><code>#{testNodeProgress.currentNodeId ?? "-"}</code></div><div><span>节点进度</span><b>{testNodeProgress.nodeMax ? `${testNodeProgress.nodeValue ?? 0} / ${testNodeProgress.nodeMax}` : "执行中"}</b></div><div><span>完成节点</span><b>{testNodeProgress.completedNodes} / {testNodeProgress.totalNodes}</b>{testNodeProgress.cachedNodes > 0 && <small>缓存 {testNodeProgress.cachedNodes}</small>}</div></div>}
                 </div>
                 <div className="workflow-test-layout">
                   <div className="workflow-test-form">
-                    <label className={`test-frame-upload ${testFrame ? "selected" : ""}`}><input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setTestFrame(file); setTestFailed(false); setTestProgress(0); setTestState(file ? "首帧已选择，可以开始测试" : ""); }} /><span>{testFrame ? "✓" : "＋"}</span><div><b>{testFrame?.name ?? "上传一张分镜首帧"}</b><small>{testFrame ? `${Math.max(1, Math.round(testFrame.size / 1024))} KB` : "PNG、JPG 或 WEBP · 最大 15 MB"}</small></div></label>
-                    <label><span>动作描述</span><textarea value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} /></label>
-                    <label className="test-duration"><span>视频时长</span><input type="number" min={1} max={30} value={testDuration} onChange={(event) => setTestDuration(Number(event.target.value))} /><i>秒</i></label>
-                    <div className="test-submit-row"><AppButton primary disabled={Boolean(testRunId) || !testFrame || !testPrompt.trim()} onClick={startWorkflowTest}>{testRunId ? "Spark 生成中…" : "开始真实测试"}</AppButton><p>{testRunId ? "可以留在本页，进度会自动更新" : "点击后会立即显示提交状态"}</p></div>
+                    {selected.inputs.map((input) => {
+                      const value = testInputs[input.key];
+                      if (["image", "video", "audio"].includes(input.valueType)) {
+                        const file = value instanceof File ? value : null;
+                        const accept = input.valueType === "image" ? "image/*" : input.valueType === "video" ? "video/*" : "audio/*";
+                        return <label key={input.key} className={`test-frame-upload ${file ? "selected" : ""}`}><input type="file" accept={accept} onChange={(event) => { const next = event.target.files?.[0] ?? null; setTestInputs((current) => ({ ...current, [input.key]: next })); setTestFailed(false); setTestProgress(0); setTestState(next ? `${input.label}已选择，可以开始测试` : ""); }} /><span>{file ? "✓" : "＋"}</span><div><b>{file?.name ?? `${input.required ? "上传" : "可选上传"}${input.label}`}</b><small>{file ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${input.valueType === "image" ? "图片" : input.valueType === "video" ? "视频" : "音频"}文件 · 最大 15 MB`}</small></div></label>;
+                      }
+                      if (input.valueType === "boolean") {
+                        return <label key={input.key} className="test-boolean"><span>{input.label}</span><input type="checkbox" checked={Boolean(value)} onChange={(event) => setTestInputs((current) => ({ ...current, [input.key]: event.target.checked }))} /></label>;
+                      }
+                      if (input.valueType === "number") {
+                        return <label key={input.key}><span>{input.label}{input.required ? " *" : ""}</span><input type="number" min={0} value={typeof value === "string" ? value : ""} onChange={(event) => setTestInputs((current) => ({ ...current, [input.key]: event.target.value }))} /></label>;
+                      }
+                      return <label key={input.key}><span>{input.label}{input.required ? " *" : ""}</span><textarea value={typeof value === "string" ? value : ""} placeholder={input.valueType === "json" ? "请输入有效 JSON" : `请输入${input.label}`} onChange={(event) => setTestInputs((current) => ({ ...current, [input.key]: event.target.value }))} /></label>;
+                    })}
+                    <div className="test-submit-row"><AppButton primary disabled={Boolean(testRunId)} onClick={startWorkflowTest}>{testRunId ? "Spark 执行中…" : "开始真实测试"}</AppButton><p>{testRunId ? "可以留在本页，进度会自动更新" : "点击后会立即显示提交状态"}</p></div>
                   </div>
-                  <div className={`workflow-test-result ${testResultUrl ? "has-result" : ""}`}>{testResultUrl ? <video controls src={testResultUrl} /> : <div><span>▶</span><b>等待测试视频</b><p>生成完成后会直接在这里播放</p></div>}</div>
+                  <div className={`workflow-test-result ${testResultUrl ? "has-result" : ""}`}>{testResultUrl ? testResultMediaType === "video" ? <video controls src={testResultUrl} /> : testResultMediaType === "audio" ? <div className="test-audio-result"><span>♪</span><b>音频已生成</b><audio controls src={testResultUrl} /></div> : testResultMediaType === "image" ? <Image unoptimized width={960} height={540} src={testResultUrl} alt="工作流测试结果" /> : <div className="test-file-result"><span>✓</span><b>结构化结果已生成</b><a href={testResultUrl} target="_blank" rel="noreferrer">查看结果</a></div> : <div><span>▶</span><b>等待测试结果</b><p>执行完成后会直接在这里显示</p></div>}</div>
                 </div>
-                {testRuns.length > 0 && <div className="test-history"><b>最近测试</b>{testRuns.slice(0, 4).map((run) => <div key={run.id}><i className={run.status}>{run.status === "succeeded" ? "✓" : run.status === "failed" ? "!" : "…"}</i><span>{run.status === "succeeded" ? "测试成功" : run.status === "failed" ? "测试失败" : "生成中"}</span><time>{new Date(run.createdAt).toLocaleString("zh-CN", { hour12: false })}</time>{run.result?.outputUrl && <button onClick={() => setTestResultUrl(`${run.result!.outputUrl}?t=${Date.now()}`)}>查看视频</button>}</div>)}</div>}
+                {testRuns.length > 0 && <div className="test-history"><b>最近测试</b>{testRuns.slice(0, 4).map((run) => <div key={run.id}><i className={run.status}>{run.status === "succeeded" ? "✓" : run.status === "failed" ? "!" : "…"}</i><span>{run.status === "succeeded" ? "测试成功" : run.status === "failed" ? "测试失败" : "执行中"}</span><time>{new Date(run.createdAt).toLocaleString("zh-CN", { hour12: false })}</time>{run.result?.outputUrl && <button onClick={() => { setTestResultMediaType(run.result?.mediaType ?? selected.outputs[0].mediaType); setTestResultUrl(`${run.result!.outputUrl}?t=${Date.now()}`); }}>查看结果</button>}</div>)}</div>}
               </section>}
 
               {showBindingEditor && <>
 
               <section className="workflow-section spark-library-section">
-                <div className="workflow-section-title"><b>1. 选择 ComfyUI 工作流</b><span>已发现 {sparkWorkflows.length} 个 · 已有执行版 {bridgeWorkflows.length} 个</span></div>
-                <div className="workflow-library-toolbar"><label><span>⌕</span><input value={workflowSearch} onChange={(event) => setWorkflowSearch(event.target.value)} placeholder="搜索 ComfyUI 工作流" /></label><small>完整显示“工作流 → 浏览”中的内容</small></div>
-                <div className="spark-workflow-grid workflow-library-grid">{visibleLibraryWorkflows.map((item) => {
-                  const bridged = bridgeWorkflowByName.get(normalizedWorkflowName(item.name));
-                  const preparing = preparingWorkflowName === item.name;
-                  return <button key={item.name} disabled={Boolean(preparingWorkflowName)} className={selectedSparkName === item.name ? "active" : ""} onClick={() => void selectLibraryWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className={`workflow-format ${bridged ? "api" : item.suggestedCapability === selectedKey ? "recommended" : "editor"}`}>{preparing ? "同步中…" : bridged ? "可直接绑定" : item.suggestedCapability === selectedKey ? "推荐" : "可选择"}</span></div><p>建议用于：{item.suggestedLabel}</p><small>{item.nodeCount} 个可视化节点 · {bridged ? `${bridged.nodeCount} 个执行节点` : "选择后自动准备执行版"}</small></button>;
-                })}</div>
-                {sparkLoading && <div className="workflow-empty">正在读取 ComfyUI 工作流库…</div>}
-                {!sparkLoading && !visibleLibraryWorkflows.length && <div className="workflow-empty">没有找到匹配的工作流</div>}
+                <div className="workflow-section-title"><b>1. 选择 ComfyUI 工作流</b><span>{availableLibraryWorkflows.length} 个可用 · 已被其他能力使用的不会显示</span></div>
+                <label className="workflow-picker"><span>工作流</span><select value={selectedSparkName} disabled={sparkLoading || Boolean(preparingWorkflowName)} onChange={(event) => { const item = sparkWorkflows.find((workflowItem) => workflowItem.name === event.target.value); if (item) void selectLibraryWorkflow(item); }}><option value="">{sparkLoading ? "正在读取 ComfyUI 工作流…" : "请选择工作流"}</option>{availableLibraryWorkflows.map((item) => <option key={item.name} value={item.name}>{item.name.replace(/\.json$/i, "")}</option>)}</select><small>{preparingWorkflowName ? `正在准备“${preparingWorkflowName.replace(/\.json$/i, "")}”…` : "选择后自动读取执行版并识别输入、输出字段"}</small></label>
+                {!sparkLoading && !availableLibraryWorkflows.length && <div className="workflow-empty">没有可用于当前能力的工作流</div>}
                 {!bridge?.authorized && <div className="format-guidance"><span>!</span><div><b>{bridge?.installed ? "桥接器已安装，但小飞象与 ComfyUI 的密钥不一致" : "Spark 尚未安装小飞象工作流桥接器"}</b><p>列表可以读取，但选择可视化工作流时需要桥接器生成可执行版本。</p></div>{connection?.serverUrl && <a href={connection.serverUrl} target="_blank" rel="noreferrer">打开 ComfyUI ↗</a>}</div>}
                 <details className="compat-workflow-source"><summary>备用方式：上传 API 格式 JSON</summary><label className={`workflow-dropzone ${workflow && !selectedBridgeWorkflow ? "has-file" : ""}`}><input type="file" accept="application/json,.json" onChange={(event) => void uploadWorkflow(event.target.files?.[0])} /><strong>{workflow && !selectedBridgeWorkflow ? "✓" : "＋"}</strong><div><b>{workflow && !selectedBridgeWorkflow ? workflowFileName : "上传 API 格式 JSON"}</b><span>仅用于 ComfyUI 页面无法保持打开的特殊情况</span></div></label></details>
               </section>

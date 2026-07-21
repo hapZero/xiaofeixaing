@@ -22,6 +22,13 @@
       "when": 1784635380729,
       "tag": "0002_panoramic_nico_minoru",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784639539147,
+      "tag": "0003_shallow_ben_grimm",
+      "breakpoints": true
     }
   ]
 }

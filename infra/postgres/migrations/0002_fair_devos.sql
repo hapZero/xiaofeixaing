@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "workflow_bindings_owner_source_uidx" ON "workflow_bindings" USING btree ("owner_id","source_workflow_id");

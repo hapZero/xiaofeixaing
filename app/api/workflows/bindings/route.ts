@@ -27,6 +27,10 @@ function isWorkflowDocument(value: unknown): value is WorkflowDocument {
   return nodes.length > 0 && nodes.every((node) => node && typeof node === "object" && typeof (node as WorkflowNode).class_type === "string");
 }
 
+function normalizedWorkflowName(name: string) {
+  return name.replace(/^workflows\//i, "").replace(/\.json$/i, "").trim().toLowerCase();
+}
+
 function validateContracts(workflow: WorkflowDocument, capability: NonNullable<ReturnType<typeof getWorkflowCapability>>, inputs: InputContract, output: OutputContract): string | null {
   for (const definition of capability.inputs) {
     const target = inputs[definition.key];
@@ -101,6 +105,15 @@ export async function POST(request: Request) {
   const db = getDb();
   const existingRows = await db.select().from(workflowBindings).where(and(eq(workflowBindings.ownerId, user.id), eq(workflowBindings.capability, body.capability))).limit(1);
   const existing = existingRows[0];
+  if (body.bridgeWorkflowId) {
+    const normalizedBridgeName = normalizedWorkflowName(bridgeName ?? body.name ?? "");
+    const occupied = (await db.select().from(workflowBindings).where(eq(workflowBindings.ownerId, user.id)))
+      .find((item) => item.id !== existing?.id && (item.sourceWorkflowId === body.bridgeWorkflowId || (normalizedBridgeName && normalizedWorkflowName(item.name).endsWith(normalizedBridgeName))));
+    if (occupied) {
+      const occupiedCapability = getWorkflowCapability(occupied.capability);
+      return errorResponse(409, "WORKFLOW_ALREADY_BOUND", `这个工作流已绑定到“${occupiedCapability?.name ?? occupied.name}”，请为当前能力选择其他工作流`);
+    }
+  }
   const id = existing?.id ?? crypto.randomUUID();
   const storageKey = body.bridgeWorkflowId && bridgeVersion
     ? `workflows/${user.id}/versions/${body.bridgeWorkflowId}/${bridgeVersion}.json`

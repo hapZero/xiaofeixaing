@@ -140,7 +140,10 @@ export const workflowBindings = sqliteTable("workflow_bindings", {
   outputContractJson: text("output_contract_json").notNull().default("{}"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   ...timestamps,
-}, (table) => [uniqueIndex("workflow_bindings_owner_capability_uidx").on(table.ownerId, table.capability)]);
+}, (table) => [
+  uniqueIndex("workflow_bindings_owner_capability_uidx").on(table.ownerId, table.capability),
+  uniqueIndex("workflow_bindings_owner_source_uidx").on(table.ownerId, table.sourceWorkflowId),
+]);
 
 export const workflowVersions = sqliteTable("workflow_versions", {
   id: text("id").primaryKey(),

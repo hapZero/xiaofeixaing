@@ -340,6 +340,14 @@ export function selectWorkflowOutput(record: Record<string, unknown>, contract: 
   return null;
 }
 
+export function selectWorkflowInlineOutput(record: Record<string, unknown>, contract: WorkflowOutputContract): unknown {
+  const outputs = record.outputs as Record<string, Record<string, unknown>> | undefined;
+  const nodeOutput = outputs?.[contract.nodeId];
+  if (!nodeOutput) return undefined;
+  if (contract.output in nodeOutput) return nodeOutput[contract.output];
+  return Object.values(nodeOutput)[0];
+}
+
 export async function downloadWorkflowOutput(file: ComfyOutputFile): Promise<{ bytes: ArrayBuffer; contentType: string }> {
   const { baseUrl, apiKey } = config();
   if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");

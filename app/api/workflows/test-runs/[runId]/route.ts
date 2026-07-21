@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { workflowBindings, workflowTestRuns } from "../../../../../db/schema";
-import { downloadWorkflowOutput, getHistoryRecord, getWorkflowHistory, historyFailed, inspectMp4DurationSeconds, selectWorkflowOutput, type WorkflowOutputContract } from "../../../../lib/server/comfyui";
+import { downloadWorkflowOutput, getHistoryRecord, getWorkflowHistory, historyFailed, inspectMp4DurationSeconds, selectWorkflowInlineOutput, selectWorkflowOutput, type WorkflowOutputContract } from "../../../../lib/server/comfyui";
 import { errorResponse, json } from "../../../../lib/server/http";
 import { getRequestUser } from "../../../../lib/server/request-user";
 import { syncExecutionProgress } from "../../../../lib/server/workflow-progress";
@@ -30,6 +30,14 @@ export async function GET(request: Request, context: RouteContext) {
     if (!binding) throw new Error("WORKFLOW_BINDING_MISSING");
     const contract = JSON.parse(binding.outputContractJson) as WorkflowOutputContract;
     const file = selectWorkflowOutput(record, contract);
+    if (!file && contract.mediaType === "json") {
+      const value = selectWorkflowInlineOutput(record, contract);
+      if (value === undefined) throw new Error(`WORKFLOW_OUTPUT_MISSING:${contract.nodeId}.${contract.output}`);
+      const result = { mediaType: contract.mediaType, value, outputUrl: `/api/workflows/test-runs/${runId}/output`, durationSeconds: null };
+      const completed = { status: "succeeded", resultJson: JSON.stringify(result), finishedAt: new Date(), updatedAt: new Date() };
+      await db.update(workflowTestRuns).set(completed).where(eq(workflowTestRuns.id, runId));
+      return json({ run: { ...run, ...completed, result, progress: { ...(live?.progress ?? {}), overall: 100, stage: "结果已返回" } } });
+    }
     if (!file) throw new Error(`WORKFLOW_OUTPUT_MISSING:${contract.nodeId}.${contract.output}`);
     if (file.outputKey && file.outputKey !== contract.output) {
       await db.update(workflowBindings).set({ outputContractJson: JSON.stringify({ ...contract, output: file.outputKey }), updatedAt: new Date() }).where(eq(workflowBindings.id, binding.id));
@@ -47,7 +55,7 @@ export async function GET(request: Request, context: RouteContext) {
     const result = { mediaType: contract.mediaType, file, outputUrl: `/api/workflows/test-runs/${runId}/output`, durationSeconds };
     const completed = { status: "succeeded", resultJson: JSON.stringify(result), finishedAt: new Date(), updatedAt: new Date() };
     await db.update(workflowTestRuns).set(completed).where(eq(workflowTestRuns.id, runId));
-    return json({ run: { ...run, ...completed, result, progress: { ...(live?.progress ?? {}), overall: 100, stage: "视频已返回" } } });
+    return json({ run: { ...run, ...completed, result, progress: { ...(live?.progress ?? {}), overall: 100, stage: "结果已返回" } } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "WORKFLOW_TEST_FAILED";
     const failed = { status: "failed", errorMessage: message, finishedAt: new Date(), updatedAt: new Date() };

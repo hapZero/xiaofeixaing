@@ -106,19 +106,26 @@ test("persists asset extraction, sound continuity, and storyboard editing", asyn
 });
 
 test("binds ComfyUI workflows and returns generated files to their shots", async () => {
-  const [center, bindingsRoute, connectionRoute, jobRoute, assetRoute, capabilities] = await Promise.all([
+  const [center, bindingsRoute, connectionRoute, libraryRoute, comfyAdapter, jobRoute, assetRoute, capabilities] = await Promise.all([
     read("../app/features/workflows/WorkflowCenter.tsx"),
     read("../app/api/workflows/bindings/route.ts"),
     read("../app/api/workflows/connection-test/route.ts"),
+    read("../app/api/workflows/spark-library/route.ts"),
+    read("../app/lib/server/comfyui.ts"),
     read("../app/api/generation/jobs/[jobId]/route.ts"),
     read("../app/api/assets/[assetId]/content/route.ts"),
     read("../app/lib/workflow-capabilities.ts"),
   ]);
-  assert.match(center, /ComfyUI API 格式/);
+  assert.match(center, /API 格式/);
   assert.match(center, /inputContract/);
+  assert.match(center, /suggestInputContract/);
+  assert.match(center, /从 Spark 选择已有工作流/);
   assert.match(bindingsRoute, /getMediaBucket\(\)\.put/);
   assert.match(bindingsRoute, /validateContracts/);
   assert.match(connectionRoute, /testComfyUiConnection/);
+  assert.match(libraryRoute, /inspectStoredWorkflows/);
+  assert.match(comfyAdapter, /userdata\?dir=workflows/);
+  assert.match(comfyAdapter, /format: "editor"/);
   assert.match(jobRoute, /selectWorkflowOutput/);
   assert.match(jobRoute, /firstFrameAssetId/);
   assert.match(assetRoute, /getOwnedProject/);

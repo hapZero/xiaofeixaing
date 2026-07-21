@@ -7,6 +7,16 @@ type WorkflowDocument = Record<string, { inputs?: Record<string, unknown>; [key:
 export type WorkflowInputTarget = { nodeId: string; input: string };
 export type WorkflowOutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json" };
 export type ComfyOutputFile = { filename: string; subfolder?: string; type?: string };
+export type StoredWorkflowFormat = "api" | "editor" | "unknown";
+export type StoredWorkflowAnalysis = {
+  name: string;
+  format: StoredWorkflowFormat;
+  nodeCount: number;
+  nodeTypes: string[];
+  suggestedCapability: string | null;
+  suggestedLabel: string;
+  outputNodeTypes: string[];
+};
 
 function config() {
   const runtime = env as unknown as RuntimeEnv;
@@ -23,6 +33,67 @@ function headers(apiKey: string): HeadersInit {
 
 export function comfyUiConfigured(): boolean {
   return Boolean(config().baseUrl);
+}
+
+export function getComfyUiServerUrl(): string {
+  return config().baseUrl;
+}
+
+function suggestStoredCapability(name: string): { key: string | null; label: string } {
+  if (/人物一致性/.test(name)) return { key: "character_image", label: "角色标准图" };
+  if (/多图.*图片|文生图/.test(name)) return { key: "storyboard_frame", label: "分镜首帧" };
+  if (/音频口型|音频参考/.test(name)) return { key: "native_audio_video", label: "原生有声视频" };
+  if (/图生视频|首尾帧|多主体视频/.test(name)) return { key: "image_to_video", label: "图生视频" };
+  if (/换角色/.test(name)) return { key: null, label: "视频角色替换（待增加能力）" };
+  return { key: null, label: "待人工确认" };
+}
+
+function analyzeStoredWorkflow(name: string, document: unknown): StoredWorkflowAnalysis {
+  const suggested = suggestStoredCapability(name);
+  if (document && typeof document === "object" && !Array.isArray(document)) {
+    const record = document as Record<string, unknown>;
+    const apiNodes = Object.values(record);
+    if (apiNodes.length && apiNodes.every((node) => node && typeof node === "object" && typeof (node as { class_type?: unknown }).class_type === "string")) {
+      const nodeTypes = apiNodes.map((node) => (node as { class_type: string }).class_type);
+      return { name, format: "api", nodeCount: nodeTypes.length, nodeTypes: [...new Set(nodeTypes)], suggestedCapability: suggested.key, suggestedLabel: suggested.label, outputNodeTypes: [...new Set(nodeTypes.filter((type) => /save|preview|combine/i.test(type)))] };
+    }
+    if (Array.isArray(record.nodes)) {
+      const nodeTypes = record.nodes.map((node) => node && typeof node === "object" ? String((node as { type?: unknown }).type ?? "") : "").filter(Boolean);
+      return { name, format: "editor", nodeCount: nodeTypes.length, nodeTypes: [...new Set(nodeTypes)], suggestedCapability: suggested.key, suggestedLabel: suggested.label, outputNodeTypes: [...new Set(nodeTypes.filter((type) => /save|preview|combine/i.test(type)))] };
+    }
+  }
+  return { name, format: "unknown", nodeCount: 0, nodeTypes: [], suggestedCapability: suggested.key, suggestedLabel: suggested.label, outputNodeTypes: [] };
+}
+
+function validStoredWorkflowName(name: string): boolean {
+  return Boolean(name) && name.endsWith(".json") && !name.includes("/") && !name.includes("\\") && !name.includes("..");
+}
+
+export async function listStoredWorkflows(): Promise<string[]> {
+  const { baseUrl, apiKey } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  const response = await fetch(`${baseUrl}/userdata?dir=workflows&recurse=true`, { headers: headers(apiKey), signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`COMFYUI_WORKFLOW_LIST_FAILED:${response.status}`);
+  const result = await response.json() as unknown;
+  if (!Array.isArray(result)) throw new Error("COMFYUI_WORKFLOW_LIST_INVALID");
+  return result.filter((name): name is string => typeof name === "string" && validStoredWorkflowName(name));
+}
+
+export async function getStoredWorkflow(name: string): Promise<{ workflow: unknown; analysis: StoredWorkflowAnalysis }> {
+  if (!validStoredWorkflowName(name)) throw new Error("COMFYUI_WORKFLOW_NAME_INVALID");
+  const { baseUrl, apiKey } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  const storedPath = encodeURIComponent(`workflows/${name}`);
+  const response = await fetch(`${baseUrl}/userdata/${storedPath}`, { headers: headers(apiKey), signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`COMFYUI_WORKFLOW_READ_FAILED:${response.status}`);
+  const workflow = await response.json() as unknown;
+  return { workflow, analysis: analyzeStoredWorkflow(name, workflow) };
+}
+
+export async function inspectStoredWorkflows(): Promise<StoredWorkflowAnalysis[]> {
+  const names = await listStoredWorkflows();
+  const inspected = await Promise.allSettled(names.map((name) => getStoredWorkflow(name)));
+  return inspected.map((result, index) => result.status === "fulfilled" ? result.value.analysis : { name: names[index], format: "unknown" as const, nodeCount: 0, nodeTypes: [], suggestedCapability: null, suggestedLabel: "读取失败", outputNodeTypes: [] });
 }
 
 export async function testComfyUiConnection(): Promise<{ connected: boolean; deviceCount: number; system: string | null }> {

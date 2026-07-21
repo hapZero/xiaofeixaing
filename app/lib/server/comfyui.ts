@@ -25,6 +25,7 @@ export type BridgeWorkflowSummary = {
   updatedAt: number;
   nodeCount: number;
   nodes: BridgeNode[];
+  suggestedCapabilities: string[];
 };
 export type BridgeExecutionEvent = {
   sequence: number;

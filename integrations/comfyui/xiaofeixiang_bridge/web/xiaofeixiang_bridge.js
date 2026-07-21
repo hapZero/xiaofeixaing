@@ -35,9 +35,16 @@ async function syncResult(result) {
 }
 
 async function syncActiveWorkflow() {
-  if (!originalGraphToPrompt) return;
-  const result = await originalGraphToPrompt();
+  const graphToPrompt = originalGraphToPrompt || app.graphToPrompt?.bind(app);
+  if (!graphToPrompt) return;
+  const result = await graphToPrompt();
   await syncResult(result);
+}
+
+function syncAfterGraphLoad() {
+  window.setTimeout(() => {
+    void syncActiveWorkflow().catch((error) => console.warn("[Xiaofeixiang Bridge]", error));
+  }, 250);
 }
 
 app.registerExtension({
@@ -49,6 +56,9 @@ app.registerExtension({
       function: syncActiveWorkflow,
     },
   ],
+  afterConfigureGraph() {
+    syncAfterGraphLoad();
+  },
   async setup() {
     if (app.graphToPrompt.__xiaofeixiangWrapped) return;
     originalGraphToPrompt = app.graphToPrompt.bind(app);
@@ -61,4 +71,3 @@ app.registerExtension({
     app.graphToPrompt = wrapped;
   },
 });
-

@@ -90,6 +90,7 @@ def _require_auth(request: web.Request) -> None:
 
 
 def _workflow_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    suggested_capabilities = entry.get("suggestedCapabilities") or _suggest_capabilities(entry["name"], entry.get("nodes", []))
     return {
         "id": entry["id"],
         "name": entry["name"],
@@ -97,7 +98,45 @@ def _workflow_summary(entry: dict[str, Any]) -> dict[str, Any]:
         "updatedAt": entry["updatedAt"],
         "nodeCount": entry["nodeCount"],
         "nodes": entry.get("nodes", []),
+        "suggestedCapabilities": suggested_capabilities,
     }
+
+
+def _suggest_capabilities(name: str, nodes: list[dict[str, Any]]) -> list[str]:
+    lowered_name = name.lower()
+    if "换角色" in name or "角色替换" in name:
+        return []
+    if "口型" in name:
+        return ["lip_sync"]
+    if "原生有声" in name or "音频参考" in name:
+        return ["native_audio_video"]
+    if "环境音" in name or "声音场" in name:
+        return ["ambient_audio"]
+    if "音色" in name or "配音" in name or "tts" in lowered_name:
+        return ["voice_synthesis"]
+    if "人物一致性" in name or "角色标准" in name or "人物标准" in name:
+        return ["character_image"]
+    if "场景标准" in name:
+        return ["scene_image"]
+    if "分镜" in name or ("多图" in name and "图片" in name):
+        return ["storyboard_frame"]
+    if "图生视频" in name or "首尾帧" in name or "多主体视频" in name:
+        return ["image_to_video"]
+    if "单集合成" in name or "视频合成" in name or "视频拼接" in name:
+        return ["episode_compose"]
+    if "剧本" in name or "资产拆解" in name or "脚本" in name:
+        return ["script_to_assets"]
+
+    class_types = " ".join(str(node.get("classType", "")) for node in nodes).lower()
+    if "savevideo" in class_types or "createvideo" in class_types or "videocombine" in class_types:
+        if "loadaudio" in class_types and "loadvideo" in class_types:
+            return ["lip_sync"]
+        return ["image_to_video"]
+    if "saveaudio" in class_types:
+        return ["voice_synthesis", "ambient_audio"]
+    if "saveimage" in class_types or "previewimage" in class_types:
+        return ["character_image", "scene_image", "storyboard_frame"]
+    return []
 
 
 def _node_manifest(workflow: dict[str, Any]) -> list[dict[str, Any]]:
@@ -335,6 +374,7 @@ async def sync_workflow(request: web.Request) -> web.Response:
         "nodeCount": len(api_workflow),
         "nodes": _node_manifest(api_workflow),
     })
+    entry["suggestedCapabilities"] = _suggest_capabilities(name, entry["nodes"])
     registry["workflows"][workflow_id] = entry
     _atomic_json(REGISTRY, registry)
     return web.json_response({"workflow": _workflow_summary(entry), "version": version})

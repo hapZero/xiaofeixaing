@@ -28,7 +28,7 @@ type SparkWorkflow = {
   suggestedLabel: string;
   outputNodeTypes: string[];
 };
-type BridgeWorkflow = { id: string; name: string; latestVersion: string; updatedAt: number; nodeCount: number; nodes: Array<{ id: string; classType: string; title: string; weight: number }> };
+type BridgeWorkflow = { id: string; name: string; latestVersion: string; updatedAt: number; nodeCount: number; nodes: Array<{ id: string; classType: string; title: string; weight: number }>; suggestedCapabilities: string[] };
 type BridgeState = { installed: boolean; version: string | null; authorized: boolean };
 
 const MAX_TEST_FRAME_BYTES = 15 * 1024 * 1024;
@@ -180,6 +180,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const selected = capabilities.find((item) => item.key === selectedKey) ?? null;
   const binding = bindings.find((item) => item.capability === selectedKey) ?? null;
   const nodes = useMemo(() => Object.entries(workflow ?? {}), [workflow]);
+  const compatibleBridgeWorkflows = useMemo(() => bridgeWorkflows.filter((item) => (item.suggestedCapabilities ?? []).includes(selectedKey)), [bridgeWorkflows, selectedKey]);
   const missingRequired = selected?.inputs.filter((input) => input.required && !inputContract[input.key]) ?? [];
   const mappedCount = selected?.inputs.filter((input) => Boolean(inputContract[input.key])).length ?? 0;
   const readyToSave = Boolean(workflow && outputNodeId && outputCollection && missingRequired.length === 0);
@@ -551,8 +552,8 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
               {showBindingEditor && <>
 
               <section className="workflow-section spark-library-section">
-                <div className="workflow-section-title"><b>1. 从 ComfyUI 选择工作流</b><span>{bridge?.authorized ? `已同步 ${bridgeWorkflows.length} 个` : "需要小飞象桥接器"}</span></div>
-                {bridge?.authorized ? <><div className="spark-workflow-grid">{bridgeWorkflows.map((item) => <button key={item.id} className={selectedBridgeWorkflow?.id === item.id ? "active" : ""} onClick={() => void inspectBridgeWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className="workflow-format api">已同步</span></div><p>固定版本：{item.latestVersion}</p><small>{item.nodeCount} 个执行节点 · 可直接绑定</small></button>)}</div>{!bridgeWorkflows.length && <div className="workflow-empty">在 ComfyUI 中打开并运行一次工作流，它会自动出现在这里</div>}</> : <div className="format-guidance"><span>!</span><div><b>{bridge?.installed ? "桥接器已安装，但小飞象与 ComfyUI 的密钥不一致" : "Spark 尚未安装小飞象工作流桥接器"}</b><p>安装后，ComfyUI 中已有工作流会自动同步；生成时会回传真实节点和百分比。</p></div>{connection?.serverUrl && <a href={connection.serverUrl} target="_blank" rel="noreferrer">打开 ComfyUI ↗</a>}</div>}
+                <div className="workflow-section-title"><b>1. 从 ComfyUI 选择工作流</b><span>{bridge?.authorized ? `当前能力可用 ${compatibleBridgeWorkflows.length} 个 · 总计同步 ${bridgeWorkflows.length} 个` : "需要小飞象桥接器"}</span></div>
+                {bridge?.authorized ? <><div className="spark-workflow-grid">{compatibleBridgeWorkflows.map((item) => <button key={item.id} className={selectedBridgeWorkflow?.id === item.id ? "active" : ""} onClick={() => void inspectBridgeWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className="workflow-format api">适用于当前能力</span></div><p>固定版本：{item.latestVersion}</p><small>{item.nodeCount} 个执行节点 · 可直接绑定</small></button>)}</div>{!compatibleBridgeWorkflows.length && <div className="workflow-empty">尚未同步可用于“{selected.name}”的工作流。保存当前 ComfyUI 改动并刷新页面，再打开对应工作流即可自动同步。</div>}</> : <div className="format-guidance"><span>!</span><div><b>{bridge?.installed ? "桥接器已安装，但小飞象与 ComfyUI 的密钥不一致" : "Spark 尚未安装小飞象工作流桥接器"}</b><p>安装后，ComfyUI 中已有工作流会自动同步；生成时会回传真实节点和百分比。</p></div>{connection?.serverUrl && <a href={connection.serverUrl} target="_blank" rel="noreferrer">打开 ComfyUI ↗</a>}</div>}
                 <details className="compat-workflow-source"><summary>兼容模式：查看 Spark 文件或上传 API JSON</summary><div className="spark-workflow-grid">{sparkWorkflows.map((item) => <button key={item.name} className={selectedSparkName === item.name ? "active" : ""} onClick={() => void inspectSparkWorkflow(item)}><div><strong>{item.name.replace(/\.json$/i, "")}</strong><span className={`workflow-format ${item.format}`}>{item.format === "api" ? "执行版" : item.format === "editor" ? "可视化版" : "无法识别"}</span></div><p>建议用于：{item.suggestedLabel}</p><small>{item.nodeCount} 个节点</small></button>)}</div>{sparkLoading && <div className="workflow-empty">正在读取 Spark 文件…</div>}<label className={`workflow-dropzone ${workflow && !selectedBridgeWorkflow ? "has-file" : ""}`}><input type="file" accept="application/json,.json" onChange={(event) => void uploadWorkflow(event.target.files?.[0])} /><strong>{workflow && !selectedBridgeWorkflow ? "✓" : "＋"}</strong><div><b>{workflow && !selectedBridgeWorkflow ? workflowFileName : "上传 API 格式 JSON"}</b><span>仅用于桥接器尚未安装时的兼容操作</span></div></label></details>
               </section>
 

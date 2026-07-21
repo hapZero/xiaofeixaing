@@ -147,6 +147,8 @@ test("syncs versioned ComfyUI workflows and persists real node progress", async 
   assert.match(bridgeExtension, /workflows\/sync/);
   assert.match(bridgeExtension, /executions\/register/);
   assert.match(bridgeExtension, /send_sync_with_capture/);
+  assert.match(bridgeExtension, /suggestedCapabilities/);
+  assert.match(bridgeExtension, /image_to_video/);
   assert.match(bridgeExtension, /max\(int\(execution\.get\("overallProgress"/);
   assert.match(bridgeClient, /registerBridgeExecution/);
   assert.match(bridgeClient, /getBridgeExecution/);
@@ -159,6 +161,7 @@ test("syncs versioned ComfyUI workflows and persists real node progress", async 
   assert.match(center, /当前节点/);
   assert.match(center, /节点进度/);
   assert.match(center, /兼容模式/);
+  assert.match(center, /compatibleBridgeWorkflows/);
 });
 
 test("runs bound image-to-video workflows from tests and storyboard shots", async () => {

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AppButton, Logo } from "../../components/ui";
 import { roleImages, sceneImages, videoImages } from "../studio/media";
-import type { View } from "../studio/types";
+import type { ProjectSummary, View } from "../studio/types";
 
 type FlowNode = {
   id: string;
@@ -304,23 +304,25 @@ export function CanvasOverlay({ onClose, onContinue }: { onClose: () => void; on
   return <CanvasWorkspace title="旧教室的第三排 · 资产画布" onClose={onClose} onContinue={onContinue} continueLabel="确认资产，进入分镜 →" />;
 }
 
-export function FreeCanvasPage({ onNavigate }: { onNavigate: (view: View) => void }) {
-  const [projectId, setProjectId] = useState<string | null>(null);
+export function FreeCanvasPage({ onNavigate, project }: { onNavigate: (view: View) => void; project?: ProjectSummary | null }) {
+  const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
+  const projectId = project?.id ?? createdProjectId;
   useEffect(() => {
+    if (project?.id) return;
     let cancelled = false;
     const ensureProject = async () => {
       const listResponse = await fetch("/api/projects", { cache: "no-store" });
       if (!listResponse.ok) return;
       const list = await listResponse.json() as { projects?: Array<{ id: string; sourceType: string; title: string }> };
       const existing = list.projects?.find((project) => project.sourceType === "canvas" && project.title === "校园悬疑灵感");
-      if (existing) { if (!cancelled) setProjectId(existing.id); return; }
+      if (existing) { if (!cancelled) setCreatedProjectId(existing.id); return; }
       const createResponse = await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "校园悬疑灵感", sourceType: "canvas", synopsis: "旧教室里，一封迟到十七年的信让两个人再次相遇。" }) });
       if (!createResponse.ok) return;
       const created = await createResponse.json() as { project?: { id: string } };
-      if (!cancelled && created.project?.id) setProjectId(created.project.id);
+      if (!cancelled && created.project?.id) setCreatedProjectId(created.project.id);
     };
     ensureProject().catch(() => undefined);
     return () => { cancelled = true; };
-  }, []);
-  return <CanvasWorkspace title="自由画布 · 校园悬疑灵感" projectId={projectId} onClose={() => onNavigate("home")} onContinue={() => onNavigate("drama")} continueLabel="整理为短剧项目 →" />;
+  }, [project?.id]);
+  return <CanvasWorkspace title={`自由画布 · ${project?.title ?? "未命名灵感"}`} projectId={projectId} onClose={() => onNavigate("home")} onContinue={() => onNavigate("drama")} continueLabel="整理为短剧项目 →" />;
 }

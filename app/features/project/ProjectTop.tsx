@@ -4,9 +4,17 @@ import type { View } from "../studio/types";
 export function ProjectTop({
   step,
   onNavigate,
+  title = "未命名项目",
+  stylePreset = "写实电影风格",
+  aspectRatio = "16:9",
+  saveState = "已保存",
 }: {
   step: 1 | 2 | 3;
   onNavigate: (view: View) => void;
+  title?: string;
+  stylePreset?: string;
+  aspectRatio?: string;
+  saveState?: string;
 }) {
   const steps: Array<[number, string, View]> = [
     [1, "剧本大纲", "script"],
@@ -16,7 +24,7 @@ export function ProjectTop({
   return (
     <div className="project-top">
       <button className="project-back" onClick={() => onNavigate("drama")}>‹</button>
-      <div className="project-name"><h1>旧教室的第三排</h1><span>自动保存于 15:32</span></div>
+      <div className="project-name"><h1>{title}</h1><span>{saveState}</span></div>
       <div className="project-steps">
         {steps.map(([number, label, target]) => (
           <button key={number} className={`${step === number ? "active" : ""} ${number < step ? "done" : ""}`} onClick={() => onNavigate(target)}>
@@ -24,8 +32,7 @@ export function ProjectTop({
           </button>
         ))}
       </div>
-      <div className="project-settings"><Pill>90年代写实电影风格</Pill><Pill>16:9</Pill></div>
+      <div className="project-settings"><Pill>{stylePreset}</Pill><Pill>{aspectRatio}</Pill></div>
     </div>
   );
 }
-

@@ -61,3 +61,22 @@ test("canvas API persists nodes and edges for an owned project", async () => {
   assert.match(route, /INSERT INTO canvas_edges/);
   assert.match(route, /CANVAS_TOO_LARGE/);
 });
+
+test("connects account-owned projects to the visible creation flow", async () => {
+  const [login, studio, drama, projectRoute, episodeRoute, script] = await Promise.all([
+    read("../app/features/auth/Login.tsx"),
+    read("../app/features/studio/StudioApp.tsx"),
+    read("../app/features/drama/DramaHub.tsx"),
+    read("../app/api/projects/route.ts"),
+    read("../app/api/projects/[projectId]/episodes/[episodeId]/route.ts"),
+    read("../app/features/script/ScriptPage.tsx"),
+  ]);
+  assert.match(login, /fetch\("\/api\/me"/);
+  assert.match(studio, /activeProject/);
+  assert.match(drama, /fetch\("\/api\/projects"/);
+  assert.match(drama, /initialScript/);
+  assert.match(projectRoute, /getD1\(\)\.batch/);
+  assert.match(episodeRoute, /getOwnedProject/);
+  assert.match(script, /800/);
+  assert.match(script, /确认剧本，进入资产库/);
+});

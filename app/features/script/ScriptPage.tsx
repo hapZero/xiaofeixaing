@@ -1,57 +1,162 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StudioShell } from "../../components/layout/StudioShell";
 import { AppButton, Pill } from "../../components/ui";
 import { ProjectTop } from "../project/ProjectTop";
-import type { View } from "../studio/types";
+import type { ProjectEpisode, ProjectSummary, View } from "../studio/types";
 
-export function ScriptPage({ onNavigate }: { onNavigate: (view: View) => void }) {
-  const [episode, setEpisode] = useState(1);
+type ProjectDetailResponse = {
+  project: ProjectSummary;
+  episodes: ProjectEpisode[];
+};
+
+export function ScriptPage({ onNavigate, projectId }: { onNavigate: (view: View) => void; projectId: string | null }) {
+  const [project, setProject] = useState<ProjectSummary | null>(null);
+  const [episodes, setEpisodes] = useState<ProjectEpisode[]>([]);
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
   const [tab, setTab] = useState<"原始创意" | "剧本摘要" | "分集剧本">("分集剧本");
-  const [extracting, setExtracting] = useState(false);
-  const [locked, setLocked] = useState(false);
-  const extract = () => {
-    setExtracting(true);
-    window.setTimeout(() => { setExtracting(false); setLocked(true); }, 1200);
+  const [scriptText, setScriptText] = useState("");
+  const [loading, setLoading] = useState(Boolean(projectId));
+  const [saveState, setSaveState] = useState<"已保存" | "保存中" | "保存失败">("已保存");
+  const [error, setError] = useState("");
+
+  const selectedEpisode = useMemo(
+    () => episodes.find((episode) => episode.id === selectedEpisodeId) ?? episodes[0] ?? null,
+    [episodes, selectedEpisodeId],
+  );
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("项目加载失败");
+        const data = await response.json() as ProjectDetailResponse;
+        if (cancelled) return;
+        setProject(data.project);
+        setEpisodes(data.episodes ?? []);
+        const first = data.episodes?.[0];
+        setSelectedEpisodeId(first?.id ?? null);
+        setScriptText(first?.scriptText ?? "");
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "项目加载失败");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  const chooseEpisode = (episode: ProjectEpisode) => {
+    setSelectedEpisodeId(episode.id);
+    setScriptText(episode.scriptText ?? "");
+    setSaveState("已保存");
   };
+
+  useEffect(() => {
+    if (!projectId || !selectedEpisode || scriptText === (selectedEpisode.scriptText ?? "")) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/episodes/${selectedEpisode.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ scriptText, status: "editing" }),
+        });
+        if (!response.ok) throw new Error("保存失败");
+        const data = await response.json() as { episode?: ProjectEpisode };
+        if (data.episode) setEpisodes((current) => current.map((episode) => episode.id === data.episode!.id ? data.episode! : episode));
+        setSaveState("已保存");
+      } catch {
+        setSaveState("保存失败");
+      }
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [projectId, scriptText, selectedEpisode]);
+
+  const confirmScript = async () => {
+    if (!projectId || !selectedEpisode) return;
+    setSaveState("保存中");
+    try {
+      const response = await fetch(`/api/projects/${projectId}/episodes/${selectedEpisode.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scriptText, status: "confirmed" }),
+      });
+      if (!response.ok) throw new Error("剧本确认失败");
+      setEpisodes((current) => current.map((episode) => episode.id === selectedEpisode.id ? { ...episode, scriptText, status: "confirmed" } : episode));
+      setSaveState("已保存");
+      onNavigate("assets");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "剧本确认失败");
+      setSaveState("保存失败");
+    }
+  };
+
+  if (!projectId) {
+    return (
+      <StudioShell view="script" onNavigate={onNavigate}>
+        <div className="missing-project"><b>还没有选择短剧项目</b><p>请从“我的短剧”打开一个项目，或先创建新项目。</p><AppButton primary onClick={() => onNavigate("drama")}>返回短剧 Agent</AppButton></div>
+      </StudioShell>
+    );
+  }
+
   return (
     <StudioShell view="script" onNavigate={onNavigate}>
-      <ProjectTop step={1} onNavigate={onNavigate} />
+      <ProjectTop step={1} onNavigate={onNavigate} title={project?.title} stylePreset={project?.stylePreset} aspectRatio={project?.aspectRatio} saveState={saveState} />
       <div className="project-body script-body">
         <aside className="episode-sidebar">
-          <div><h3>分集剧本</h3><Pill>3 集</Pill></div>
-          {[1, 2, 3].map((item) => (
-            <button key={item} className={episode === item ? "active" : ""} onClick={() => setEpisode(item)}>
-              <span>0{item}</span><div><b>{item === 1 ? "旧教室重逢" : item === 2 ? "十七年真相" : "误解终于解开"}</b><small>{item === 3 ? "待确认" : locked ? "资产已提取" : "剧本已生成"}</small></div><i className={item === 3 ? "pending" : "ready"} />
+          <div><h3>分集剧本</h3><Pill>{episodes.length} 集</Pill></div>
+          {episodes.map((episode) => (
+            <button key={episode.id} className={selectedEpisode?.id === episode.id ? "active" : ""} onClick={() => chooseEpisode(episode)}>
+              <span>{String(episode.episodeNumber).padStart(2, "0")}</span>
+              <div><b>{episode.title}</b><small>{episode.status === "confirmed" ? "已确认" : episode.scriptText ? "编辑中" : "待生成"}</small></div>
+              <i className={episode.scriptText ? "ready" : "pending"} />
             </button>
           ))}
-          <button className="add-episode">＋ 新增一集</button>
+          <button className="add-episode" disabled>＋ 新增一集（即将开放）</button>
         </aside>
         <main className="script-workspace">
-          <div className="workspace-header">
-            <div><p className="eyebrow">第 {episode} 集</p><h2>{episode === 1 ? "旧教室重逢揭开尘封往事" : episode === 2 ? "十七年真相浮出水面" : "十七年误解一朝解开"}</h2></div>
-            <div><AppButton>批量选择</AppButton><AppButton>重新生成</AppButton></div>
-          </div>
-          <div className="content-tabs">
-            {(["原始创意", "剧本摘要", "分集剧本"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}
-          </div>
-          {tab !== "分集剧本" ? (
-            <div className="summary-card"><h3>{tab}</h3><p>{tab === "原始创意" ? "十七年前，一封没有寄出的信让五个人的人生走向完全不同的方向。多年后，他们在即将拆除的旧教学楼里再次相遇。" : "林微回到县城老中学整理旧物，在旧教室遇见多年未见的陈屹。一次意外发现，让两人重新追查当年被掩盖的真相。"}</p></div>
+          {loading ? (
+            <div className="script-loading">正在读取剧本…</div>
+          ) : error && !project ? (
+            <div className="script-loading error">{error}</div>
           ) : (
-            <div className={`episode-script ${locked ? "locked" : ""}`}>
-              {locked && <div className="lock-banner"><span>⌁</span><div><b>资产已拆解，本集剧本已锁定</b><p>角色、场景和道具已进入资产库，修改剧本可能影响后续内容。</p></div></div>}
-              <div className="scene-block"><div className="scene-number">01</div><div><h3>旧教室 · 日 · 内</h3><p className="scene-meta">人物：林微　场景：县城老中学旧教室</p><p>阳光从落满灰尘的窗户斜照进来。林微蹲在一堆旧物前，手机开着免提。</p><p><b>画外音（中年女性）：</b>微姐，那男的条件真不错，你就去见一面呗？</p><p><b>林微：</b>我习惯一个人了，这样挺好。</p></div></div>
-              <div className="scene-block"><div className="scene-number">02</div><div><h3>旧走廊 · 日 · 内</h3><p className="scene-meta">人物：林微、陈屹　场景：教学楼旧走廊</p><p>走廊尽头传来缓慢的脚步声。林微抬起头，十七年未见的陈屹站在逆光中。</p><p><b>陈屹：</b>你果然还是回来了。</p></div></div>
-            </div>
+            <>
+              <div className="workspace-header">
+                <div><p className="eyebrow">第 {selectedEpisode?.episodeNumber ?? 1} 集</p><h2>{selectedEpisode?.title ?? "第 1 集"}</h2></div>
+                <div><span className={`autosave-state ${saveState === "保存失败" ? "error" : ""}`}>{saveState}</span><AppButton disabled>重新生成</AppButton></div>
+              </div>
+              <div className="content-tabs">
+                {(["原始创意", "剧本摘要", "分集剧本"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}
+              </div>
+              {tab === "原始创意" && <div className="summary-card"><h3>原始创意</h3><p>{project?.synopsis || "上传剧本创建的项目，原始内容保存在分集剧本中。"}</p></div>}
+              {tab === "剧本摘要" && <div className="summary-card"><h3>剧本摘要</h3><p>{selectedEpisode?.summary || "摘要尚未生成。后续将由剧本能力根据当前分集内容生成，并保留人工修改入口。"}</p></div>}
+              {tab === "分集剧本" && (
+                <div className="episode-script editor-mode">
+                  {selectedEpisode?.status === "confirmed" && <div className="lock-banner"><span>✓</span><div><b>本集剧本已确认</b><p>继续修改会自动保存，进入资产提取时以最新内容为准。</p></div></div>}
+                  <textarea
+                    className="script-text-editor"
+                    aria-label="分集剧本内容"
+                    value={scriptText}
+                    onChange={(event) => { setScriptText(event.target.value); setSaveState("保存中"); }}
+                    placeholder={project?.sourceType === "ai_script" ? "故事设定已保存。AI 剧本生成能力接入后会在这里写入分集内容，你也可以现在直接创作。" : "在这里粘贴或编写本集剧本…"}
+                  />
+                  <div className="script-count">{scriptText.length.toLocaleString()} 字</div>
+                </div>
+              )}
+              {error && <p className="project-form-error" role="alert">{error}</p>}
+              <div className="script-footer">
+                <div><span className="status-dot" />剧本内容已保存到当前账号的项目</div>
+                <AppButton primary disabled={!scriptText.trim() || saveState === "保存中"} onClick={confirmScript}>确认剧本，进入资产库 →</AppButton>
+              </div>
+            </>
           )}
-          <div className="script-footer">
-            <div><span className="status-dot" />3 集剧本已生成，2 集等待资产提取</div>
-            {locked ? <AppButton primary onClick={() => onNavigate("assets")}>进入资产库 →</AppButton> : <AppButton primary onClick={extract}>{extracting ? "正在提取资产…" : "提取角色与场景 →"}</AppButton>}
-          </div>
         </main>
       </div>
     </StudioShell>
   );
 }
-

@@ -43,3 +43,14 @@ export async function PATCH(request: Request, context: RouteContext) {
   const project = await getOwnedProject(projectId, user.id);
   return json({ project });
 }
+
+export async function DELETE(request: Request, context: RouteContext) {
+  const user = await getRequestUser(request);
+  if (!user) return errorResponse(401, "AUTH_REQUIRED", "请先登录小飞象");
+  const { projectId } = await context.params;
+  if (!await getOwnedProject(projectId, user.id)) {
+    return errorResponse(404, "PROJECT_NOT_FOUND", "项目不存在或无权访问");
+  }
+  await getDb().delete(projects).where(eq(projects.id, projectId));
+  return new Response(null, { status: 204 });
+}

@@ -73,7 +73,9 @@
 - 已完成：monorepo 工作区、NestJS API、BullMQ Worker、共享契约/领域/配置包和 ComfyUI 客户端。
 - 已完成：PostgreSQL 迁移、Redis 队列、S3 适配器、本地 PostgreSQL/Redis/MinIO 运行环境。
 - 已验证：API 提交任务 → Redis/BullMQ → Worker → ComfyUI `/prompt` → 幂等完成状态。
-- 正在进行：手机号账户与项目纵向闭环，并将任务记录正式写入 PostgreSQL。
+- 已完成：预览账号识别、账号项目列表、三种项目创建入口、上传剧本初始化、分集剧本自动保存和项目自由画布绑定。
+- 正在进行：商用手机号验证码会话与 PostgreSQL 用户隔离；短信供应商未确定前不伪造线上验证码发送。
+- 紧接着执行：剧本大纲生成/编辑、项目资产提取和角色音色配置。
 - 当前 D1/R2 版本只作为在线原型和接口验证环境，不作为商用最终数据底座。
 
 ## 代码约束

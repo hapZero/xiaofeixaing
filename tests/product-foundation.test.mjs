@@ -80,3 +80,27 @@ test("connects account-owned projects to the visible creation flow", async () =>
   assert.match(script, /800/);
   assert.match(script, /确认剧本，进入资产库/);
 });
+
+test("persists asset extraction, sound continuity, and storyboard editing", async () => {
+  const [extractRoute, characterRoute, audioRoute, storyboardRoute, shotRoute, assetsPage, videosPage, editorPage] = await Promise.all([
+    read("../app/api/projects/[projectId]/extract-assets/route.ts"),
+    read("../app/api/projects/[projectId]/characters/[characterId]/route.ts"),
+    read("../app/api/projects/[projectId]/audio-presets/[presetId]/route.ts"),
+    read("../app/api/projects/[projectId]/storyboards/route.ts"),
+    read("../app/api/projects/[projectId]/shots/[shotId]/route.ts"),
+    read("../app/features/assets/AssetsPage.tsx"),
+    read("../app/features/videos/VideosPage.tsx"),
+    read("../app/features/editor/EditorPage.tsx"),
+  ]);
+  assert.match(extractRoute, /extractScriptAssets/);
+  assert.match(extractRoute, /audio_presets/);
+  assert.match(characterRoute, /voiceLocked/);
+  assert.match(audioRoute, /locked/);
+  assert.match(storyboardRoute, /environmentPresetId/);
+  assert.match(shotRoute, /SHOT_NOT_FOUND/);
+  assert.match(assetsPage, /保存并锁定音色/);
+  assert.match(assetsPage, /保存并锁定声音场/);
+  assert.match(videosPage, /继承场景声音场/);
+  assert.match(editorPage, /storyboard_frame/);
+  assert.match(editorPage, /WORKFLOW_REQUIRED|需要先配置/);
+});

@@ -88,6 +88,11 @@ export function ScriptPage({ onNavigate, projectId }: { onNavigate: (view: View)
       });
       if (!response.ok) throw new Error("剧本确认失败");
       setEpisodes((current) => current.map((episode) => episode.id === selectedEpisode.id ? { ...episode, scriptText, status: "confirmed" } : episode));
+      const extraction = await fetch(`/api/projects/${projectId}/extract-assets`, { method: "POST" });
+      if (!extraction.ok) {
+        const data = await extraction.json().catch(() => null) as { error?: { message?: string } } | null;
+        throw new Error(data?.error?.message ?? "角色与场景提取失败");
+      }
       setSaveState("已保存");
       onNavigate("assets");
     } catch (reason) {

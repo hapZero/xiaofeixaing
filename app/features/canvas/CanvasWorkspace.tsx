@@ -300,8 +300,8 @@ function CanvasWorkspace({
   );
 }
 
-export function CanvasOverlay({ onClose, onContinue }: { onClose: () => void; onContinue: () => void }) {
-  return <CanvasWorkspace title="旧教室的第三排 · 资产画布" onClose={onClose} onContinue={onContinue} continueLabel="确认资产，进入分镜 →" />;
+export function CanvasOverlay({ onClose, onContinue, projectId, title = "短剧资产" }: { onClose: () => void; onContinue: () => void; projectId?: string | null; title?: string }) {
+  return <CanvasWorkspace title={`${title} · 资产画布`} projectId={projectId} onClose={onClose} onContinue={onContinue} continueLabel="确认资产，进入分镜 →" />;
 }
 
 export function FreeCanvasPage({ onNavigate, project }: { onNavigate: (view: View) => void; project?: ProjectSummary | null }) {

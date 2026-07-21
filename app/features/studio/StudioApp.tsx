@@ -30,9 +30,9 @@ export function StudioApp() {
   if (view === "home") return <Home onNavigate={setView} />;
   if (view === "drama") return <DramaHub onNavigate={setView} onOpenProject={openProject} />;
   if (view === "script") return <ScriptPage onNavigate={setView} projectId={activeProject?.id ?? null} />;
-  if (view === "assets") return <AssetsPage onNavigate={setView} />;
-  if (view === "videos") return <VideosPage onNavigate={setView} />;
-  if (view === "editor") return <EditorPage onNavigate={setView} />;
+  if (view === "assets") return <AssetsPage onNavigate={setView} project={activeProject} />;
+  if (view === "videos") return <VideosPage onNavigate={setView} project={activeProject} />;
+  if (view === "editor") return <EditorPage onNavigate={setView} project={activeProject} />;
   if (view === "canvas") return <FreeCanvasPage onNavigate={setView} project={activeProject?.sourceType === "canvas" ? activeProject : null} />;
   return <GlobalAssets onNavigate={setView} />;
 }

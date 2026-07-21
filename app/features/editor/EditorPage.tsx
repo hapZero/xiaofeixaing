@@ -1,74 +1,137 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppButton, Pill } from "../../components/ui";
 import { roleImages, sceneImages, videoImages } from "../studio/media";
-import type { View } from "../studio/types";
+import type { AudioPreset, ProjectAsset, ProjectCharacter, ProjectEpisode, ProjectShot, ProjectSummary, View } from "../studio/types";
 
-export function EditorPage({ onNavigate }: { onNavigate: (view: View) => void }) {
+type EditorDetail = {
+  project: ProjectSummary;
+  episodes: ProjectEpisode[];
+  assets: ProjectAsset[];
+  characters: ProjectCharacter[];
+  audioPresets: AudioPreset[];
+  shots: ProjectShot[];
+};
+
+export function EditorPage({ onNavigate, project: initialProject }: { onNavigate: (view: View) => void; project: ProjectSummary | null }) {
+  const [detail, setDetail] = useState<EditorDetail | null>(null);
   const [segment, setSegment] = useState(0);
-  const [editing, setEditing] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const segments = useMemo(() => [15, 11, 9, 9, 15, 13, 12, 10, 10, 10], []);
-  const regenerate = () => {
-    setGenerating(true);
-    window.setTimeout(() => { setGenerating(false); setHistoryOpen(true); }, 1400);
+  const [prompt, setPrompt] = useState("");
+  const [saveState, setSaveState] = useState<"已保存" | "保存中" | "保存失败">("已保存");
+  const [generationState, setGenerationState] = useState("");
+  const [loading, setLoading] = useState(Boolean(initialProject));
+  const projectId = initialProject?.id ?? null;
+  const shots = useMemo(() => [...(detail?.shots ?? [])].sort((a, b) => a.sequence - b.sequence), [detail]);
+  const selectedShot = shots[segment] ?? null;
+  const selectedEpisode = detail?.episodes.find((episode) => episode.id === selectedShot?.episodeId) ?? detail?.episodes[0] ?? null;
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    fetch(`/api/projects/${projectId}`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("分镜编辑器加载失败");
+        return response.json() as Promise<EditorDetail>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const orderedShots = [...data.shots].sort((a, b) => a.sequence - b.sequence);
+        setDetail(data);
+        setSegment(0);
+        setPrompt(orderedShots[0]?.prompt ?? "");
+      })
+      .catch((reason: unknown) => { if (!cancelled) setGenerationState(reason instanceof Error ? reason.message : "分镜编辑器加载失败"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !selectedShot || prompt === selectedShot.prompt) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/shots/${selectedShot.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, status: "edited" }) });
+        if (!response.ok) throw new Error("保存失败");
+        const data = await response.json() as { shot: ProjectShot };
+        setDetail((current) => current ? { ...current, shots: current.shots.map((shot) => shot.id === data.shot.id ? data.shot : shot) } : current);
+        setSaveState("已保存");
+      } catch {
+        setSaveState("保存失败");
+      }
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [projectId, prompt, selectedShot]);
+
+  const chooseShot = (index: number) => {
+    setSegment(index);
+    setPrompt(shots[index]?.prompt ?? "");
+    setSaveState("已保存");
+    setGenerationState("");
   };
+
+  const submitGeneration = async () => {
+    if (!projectId || !selectedShot) return;
+    setGenerationState("正在提交首帧生成任务…");
+    const response = await fetch("/api/generation/jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectId,
+        entityType: "shot",
+        entityId: selectedShot.id,
+        capability: "storyboard_frame",
+        payload: { prompt, aspectRatio: detail?.project.aspectRatio, stylePreset: detail?.project.stylePreset },
+      }),
+    });
+    const data = await response.json() as { job?: { id: string }; error?: { message?: string } };
+    if (!response.ok) {
+      setGenerationState(data.error?.message ?? "首帧任务提交失败");
+      return;
+    }
+    setGenerationState(`任务已排队：${data.job?.id ?? "等待执行"}`);
+  };
+
+  const referencedCharacters = detail?.characters.filter((character) => prompt.includes(character.canonicalName)) ?? [];
+  const sceneAssets = detail?.assets.filter((asset) => asset.assetType === "scene") ?? [];
+  const referencedScenes = sceneAssets.filter((asset) => prompt.includes(asset.name));
+  const environmentPreset = detail?.audioPresets.find((preset) => preset.id === selectedShot?.environmentPresetId) ?? null;
+
+  if (!initialProject) {
+    return <div className="editor-page"><div className="missing-project"><b>还没有选择短剧项目</b><p>请先从分集视频页面进入分镜编辑器。</p><AppButton primary onClick={() => onNavigate("drama")}>返回我的短剧</AppButton></div></div>;
+  }
+
   return (
     <div className="editor-page">
       <header className="editor-topbar">
-        <button className="editor-back" onClick={() => onNavigate("videos")}>‹</button><div className="editor-title"><b>第1集 · 旧教室重逢揭开尘封往事</b><span>已自动保存</span></div>
-        <div className="editor-config"><Pill>视频模型 2.0 Fast⌄</Pill><Pill>720P⌄</Pill><Pill>90年代写实电影</Pill><Pill>16:9</Pill></div>
-        <div className="editor-top-actions"><AppButton>导出</AppButton><AppButton primary>合成整集</AppButton><button className="profile-avatar">Z</button></div>
+        <button className="editor-back" onClick={() => onNavigate("videos")}>‹</button><div className="editor-title"><b>{selectedEpisode ? `第${selectedEpisode.episodeNumber}集 · ${selectedEpisode.title}` : initialProject.title}</b><span>{saveState}</span></div>
+        <div className="editor-config"><Pill>首帧工作流⌄</Pill><Pill>{detail?.project.aspectRatio ?? initialProject.aspectRatio}</Pill><Pill>{detail?.project.stylePreset ?? initialProject.stylePreset}</Pill></div>
+        <div className="editor-top-actions"><AppButton disabled>导出</AppButton><AppButton disabled>合成整集</AppButton><button className="profile-avatar">Z</button></div>
       </header>
-      <div className="editor-layout">
-        <aside className="editor-assets">
-          <div className="editor-assets-tabs"><button className="active">本集</button><button>全集</button></div>
-          <div className="editor-category-tabs"><button className="active">角色</button><button>场景</button><button>素材</button><button>道具</button></div>
-          <h4>角色</h4>
-          <div className="mini-asset-grid">{roleImages.slice(0, 4).map((image, index) => <button key={image}><div style={{ backgroundImage: `url(${image})` }} /><span>{["林微", "林微·学生", "王老师", "陈屹"][index]}</span></button>)}</div>
-          <h4>场景</h4>
-          <div className="mini-scenes">{sceneImages.slice(0, 3).map((image, index) => <button key={image}><div style={{ backgroundImage: `url(${image})` }} /><span>{["废弃旧教室", "旧走廊", "档案办公室"][index]}</span></button>)}</div>
-        </aside>
-        <main className="storyboard-panel">
-          <div className="storyboard-heading"><div><p className="eyebrow">当前片段</p><h2>片段 {String(segment + 1).padStart(2, "0")}</h2></div><div className="credit-note">每 1 秒调用 1 次视频能力</div></div>
-          <div className="referenced-assets"><span>已引用</span><button><i style={{ backgroundImage: `url(${sceneImages[0]})` }} />旧教室</button><button><i style={{ backgroundImage: `url(${roleImages[0]})` }} />林微</button><button>＋ @ 引用资产</button></div>
-          <div className={`shot-script ${editing ? "editing" : ""}`}>
-            <p className="setting-line">本片段场景设定在 <b>@县城老中学 · 旧教室</b>，生成一个由以下 3 个镜头组成的视频。</p>
-            <div className="shot-row"><div className="shot-index"><span>01</span><button>{editing ? "4秒⌄" : "4s"}</button></div><div><h4>建立空间</h4><p>远景，固定机位，平视拍摄空无一人的县城老中学旧教室。阳光透过布满灰尘的窗户形成光柱，色彩饱和度低，呈现90年代胶片质感。画面中所有角色全程不说话。</p></div></div>
-            <div className="shot-row"><div className="shot-index"><span>02</span><button>{editing ? "5秒⌄" : "5s"}</button></div><div><h4>画外音进入</h4><p>中景，俯视机位。<b>@林微</b> 蹲在旧物旁安静整理，手机放在一旁并开启免提。画外音响起：“微姐，那男的条件真不错，你就去见一面呗？”</p><div className="audio-cue"><span>♬</span><b>画外音</b><small>中年女性 · 热情 · 电话质感</small><button>▶</button></div></div></div>
-            <div className="shot-row"><div className="shot-index"><span>03</span><button>{editing ? "6秒⌄" : "6s"}</button></div><div><h4>人物回应</h4><p>近景，85mm中长焦。<b>@林微</b> 面朝手机，温和但坚定地开口说：“我习惯一个人了，这样挺好，不麻烦别人，也不指望谁。”说完按下挂断键。</p><div className="audio-cue voice-fixed"><span>♬</span><b>林微 · 固定音色</b><small>青年女声 · 克制坚定</small><button>▶</button></div></div></div>
+      {loading ? <div className="script-loading">正在读取分镜编辑器…</div> : !selectedShot ? <div className="missing-project"><b>当前项目还没有分镜</b><p>返回分集视频页面生成分镜脚本。</p><AppButton primary onClick={() => onNavigate("videos")}>返回分集视频</AppButton></div> : (
+        <>
+          <div className="editor-layout">
+            <aside className="editor-assets">
+              <div className="editor-assets-tabs"><button className="active">本集</button><button>全集</button></div>
+              <div className="editor-category-tabs"><button className="active">角色</button><button>场景</button><button>素材</button><button>道具</button></div>
+              <h4>角色</h4><div className="mini-asset-grid">{detail?.characters.map((character, index) => <button key={character.id}><div style={{ backgroundImage: `url(${roleImages[index % roleImages.length]})` }} /><span>{character.canonicalName}{character.voiceLocked ? " · 音色已锁定" : ""}</span></button>)}</div>
+              <h4>场景</h4><div className="mini-scenes">{sceneAssets.map((asset, index) => <button key={asset.id}><div style={{ backgroundImage: `url(${sceneImages[index % sceneImages.length]})` }} /><span>{asset.name}</span></button>)}</div>
+            </aside>
+            <main className="storyboard-panel">
+              <div className="storyboard-heading"><div><p className="eyebrow">当前分镜</p><h2>分镜 {String(segment + 1).padStart(2, "0")} · {selectedShot.title}</h2></div><div className="credit-note">预计 {Math.round(selectedShot.durationMs / 1_000)} 秒</div></div>
+              <div className="referenced-assets"><span>自动引用</span>{referencedScenes.map((asset, index) => <button key={asset.id}><i style={{ backgroundImage: `url(${sceneImages[index % sceneImages.length]})` }} />{asset.name}</button>)}{referencedCharacters.map((character, index) => <button key={character.id}><i style={{ backgroundImage: `url(${roleImages[index % roleImages.length]})` }} />{character.canonicalName}</button>)}{!referencedScenes.length && !referencedCharacters.length && <small>当前描述尚未匹配项目资产名称</small>}</div>
+              <div className="shot-script dynamic-shot-editor"><label>分镜描述<textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setSaveState("保存中"); }} /></label><div className="shot-editor-meta"><span>{prompt.length} 字</span><span>{environmentPreset ? `声音场：${environmentPreset.name}` : "尚未继承场景声音场"}</span></div></div>
+              <div className="storyboard-actions"><AppButton disabled={saveState === "保存中"}>保存状态：{saveState}</AppButton><AppButton primary onClick={submitGeneration}>生成分镜首帧</AppButton></div>
+              {generationState && <div className={`generation-state ${generationState.includes("需要先配置") ? "needs-config" : ""}`}>{generationState}</div>}
+            </main>
+            <aside className="video-preview-panel">
+              <div className="video-stage awaiting-generation" style={{ backgroundImage: `url(${videoImages[segment % videoImages.length]})` }}><div className="awaiting-label"><b>{selectedShot.firstFrameAssetId ? "首帧已生成" : "等待生成首帧"}</b><span>{selectedShot.status}</span></div><div className="video-stage-top"><Pill dark>分镜 {String(segment + 1).padStart(2, "0")}</Pill></div></div>
+              <div className="preview-tools"><button disabled>▧<span>原视频</span></button><button disabled>◇<span>提升画质</span></button><button disabled>⌁<span>擦除字幕</span></button><button disabled>⇩<span>下载</span></button></div>
+              <div className="sound-continuity"><div><span>≈</span><div><b>声音连续性</b><p>{environmentPreset?.description ?? "该分镜尚未匹配场景环境音"}</p></div></div><i>{environmentPreset?.locked ? "已锁定" : "待配置"}</i></div>
+            </aside>
           </div>
-          <div className="storyboard-actions">{editing ? <><AppButton onClick={() => setEditing(false)}>取消</AppButton><AppButton primary onClick={() => setEditing(false)}>保存分镜</AppButton></> : <><AppButton onClick={() => setEditing(true)}>编辑分镜</AppButton><AppButton primary onClick={regenerate}>{generating ? "正在生成新版本…" : "重新生成片段"}</AppButton></>}</div>
-        </main>
-        <aside className="video-preview-panel">
-          <div className="video-stage" style={{ backgroundImage: `url(${videoImages[segment % 3]})` }}><span className="large-play">▶</span><div className="video-stage-top"><Pill dark>当前版本 V3</Pill></div><div className="video-controls"><span>00:0{Math.min(segment + 1, 9)}</span><div><i style={{ width: `${18 + segment * 4}%` }} /><b /></div><span>00:{segments[segment]}</span></div></div>
-          <div className="preview-tools"><button>▧<span>原视频</span></button><button>◇<span>提升画质</span></button><button>⌁<span>擦除字幕</span></button><button>⇩<span>下载</span></button></div>
-          <div className="sound-continuity"><div><span>≈</span><div><b>声音连续性</b><p>同场景环境音已跨片段延续</p></div></div><i>已开启</i></div>
-        </aside>
-      </div>
-      <div className="timeline-panel">
-        <div className="timeline-header"><div><b>分镜片段</b><span>10 个片段 · 01:54</span></div><div><button>多选</button><button>智能预演</button></div></div>
-        <div className="timeline-strip">{segments.map((duration, index) => <div key={index} className={`timeline-item ${segment === index ? "active" : ""}`} role="button" tabIndex={0} onClick={() => setSegment(index)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSegment(index); }}><div style={{ backgroundImage: `url(${videoImages[index % 3]})` }}><span>0{index + 1}</span><i>✓</i></div><p>{duration}s</p><button className="history-trigger" aria-label={`查看分镜 ${index + 1} 的历史版本`} onClick={(event) => { event.stopPropagation(); setSegment(index); setHistoryOpen(true); }}>↺</button></div>)}</div>
-      </div>
-      {historyOpen && <HistoryDrawer onClose={() => setHistoryOpen(false)} />}
+          <div className="timeline-panel"><div className="timeline-header"><div><b>分镜片段</b><span>{shots.length} 个片段</span></div><div><button disabled>多选</button><button disabled>智能预演</button></div></div><div className="timeline-strip">{shots.map((shot, index) => <div key={shot.id} className={`timeline-item ${segment === index ? "active" : ""}`} role="button" tabIndex={0} onClick={() => chooseShot(index)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") chooseShot(index); }}><div style={{ backgroundImage: `url(${videoImages[index % videoImages.length]})` }}><span>{String(index + 1).padStart(2, "0")}</span><i>{shot.firstFrameAssetId ? "✓" : "·"}</i></div><p>{Math.round(shot.durationMs / 1_000)}s</p></div>)}</div></div>
+        </>
+      )}
     </div>
   );
 }
-
-function HistoryDrawer({ onClose }: { onClose: () => void }) {
-  const [selected, setSelected] = useState(0);
-  return (
-    <div className="drawer-backdrop" onMouseDown={onClose}>
-      <aside className="history-drawer" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="drawer-heading"><div><p className="eyebrow">片段 01</p><h2>历史版本</h2></div><button onClick={onClose}>×</button></div>
-        <p className="drawer-intro">每次重新生成都会保留旧结果，你可以随时切换当前版本。</p>
-        {[0, 1, 2].map((index) => <button key={index} className={`version-card ${selected === index ? "active" : ""}`} onClick={() => setSelected(index)}><div style={{ backgroundImage: `url(${videoImages[index]})` }}><span>▶</span></div><section><h3>版本 V{3 - index} {index === 0 && <em>当前使用</em>}</h3><p>视频模型 2.0 Fast · 720P · 15秒</p><small>{index === 0 ? "刚刚生成" : `${index + 1} 小时前`}</small></section><i>{selected === index ? "●" : "○"}</i></button>)}
-        <div className="version-prompt"><h4>本次生成描述</h4><p>近景，85mm中长焦。林微面朝手机，温和但坚定地说出台词，随后按下挂断键。保持角色音色与旧教室环境声连续。</p></div>
-        <div className="drawer-actions"><AppButton>下载版本</AppButton><AppButton primary onClick={onClose}>{selected === 0 ? "正在使用" : "设为当前版本"}</AppButton></div>
-      </aside>
-    </div>
-  );
-}
-

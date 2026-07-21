@@ -119,7 +119,7 @@ test("binds ComfyUI workflows and returns generated files to their shots", async
   assert.match(center, /API 格式/);
   assert.match(center, /inputContract/);
   assert.match(center, /suggestInputContract/);
-  assert.match(center, /从 ComfyUI 选择工作流/);
+  assert.match(center, /选择 ComfyUI 工作流/);
   assert.match(bindingsRoute, /getMediaBucket\(\)\.put/);
   assert.match(bindingsRoute, /validateContracts/);
   assert.match(connectionRoute, /testComfyUiConnection/);
@@ -134,8 +134,9 @@ test("binds ComfyUI workflows and returns generated files to their shots", async
 });
 
 test("syncs versioned ComfyUI workflows and persists real node progress", async () => {
-  const [bridgeExtension, bridgeClient, bridgeRoute, progress, bindingRoute, schema, migration, center] = await Promise.all([
+  const [bridgeExtension, bridgeFrontend, bridgeClient, bridgeRoute, progress, bindingRoute, schema, migration, center] = await Promise.all([
     read("../integrations/comfyui/xiaofeixiang_bridge/__init__.py"),
+    read("../integrations/comfyui/xiaofeixiang_bridge/web/xiaofeixiang_bridge.js"),
     read("../app/lib/server/comfyui.ts"),
     read("../app/api/workflows/bridge/route.ts"),
     read("../app/lib/server/workflow-progress.ts"),
@@ -149,6 +150,12 @@ test("syncs versioned ComfyUI workflows and persists real node progress", async 
   assert.match(bridgeExtension, /send_sync_with_capture/);
   assert.match(bridgeExtension, /suggestedCapabilities/);
   assert.match(bridgeExtension, /image_to_video/);
+  assert.match(bridgeExtension, /bridge\/preparations/);
+  assert.match(bridgeExtension, /preparations\/next/);
+  assert.match(bridgeFrontend, /prepareRequestedWorkflow/);
+  assert.match(bridgeFrontend, /Math\.imul/);
+  assert.doesNotMatch(bridgeFrontend, /crypto\.subtle/);
+  assert.match(bridgeFrontend, /replace\(\/\^\\\*\+\//);
   assert.match(bridgeExtension, /max\(int\(execution\.get\("overallProgress"/);
   assert.match(bridgeClient, /registerBridgeExecution/);
   assert.match(bridgeClient, /getBridgeExecution/);
@@ -160,8 +167,10 @@ test("syncs versioned ComfyUI workflows and persists real node progress", async 
   assert.match(migration, /workflow_execution_events/);
   assert.match(center, /当前节点/);
   assert.match(center, /节点进度/);
-  assert.match(center, /兼容模式/);
-  assert.match(center, /compatibleBridgeWorkflows/);
+  assert.match(center, /备用方式/);
+  assert.match(center, /visibleLibraryWorkflows/);
+  assert.match(center, /完整显示“工作流 → 浏览”中的内容/);
+  assert.match(center, /selectLibraryWorkflow/);
 });
 
 test("runs bound image-to-video workflows from tests and storyboard shots", async () => {

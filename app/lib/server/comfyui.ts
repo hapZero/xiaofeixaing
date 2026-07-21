@@ -50,6 +50,16 @@ export type BridgeExecutionSnapshot = {
   updatedAt: number;
   error?: Record<string, unknown>;
 };
+export type BridgeWorkflowPreparation = {
+  id: string;
+  name: string;
+  status: "queued" | "preparing" | "succeeded" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  workflowId: string | null;
+  version: string | null;
+  error: string | null;
+};
 
 function config() {
   const runtime = env as unknown as RuntimeEnv;
@@ -84,7 +94,8 @@ export function getComfyUiServerUrl(): string {
 function suggestStoredCapability(name: string): { key: string | null; label: string } {
   if (/人物一致性/.test(name)) return { key: "character_image", label: "角色标准图" };
   if (/多图.*图片|文生图/.test(name)) return { key: "storyboard_frame", label: "分镜首帧" };
-  if (/音频口型|音频参考/.test(name)) return { key: "native_audio_video", label: "原生有声视频" };
+  if (/音频口型|口型/.test(name)) return { key: "lip_sync", label: "口型同步" };
+  if (/音频参考/.test(name)) return { key: "native_audio_video", label: "原生有声视频" };
   if (/图生视频|首尾帧|多主体视频/.test(name)) return { key: "image_to_video", label: "图生视频" };
   if (/换角色/.test(name)) return { key: null, label: "视频角色替换（待增加能力）" };
   return { key: null, label: "待人工确认" };
@@ -181,6 +192,34 @@ export async function getBridgeWorkflow(workflowId: string, version?: string): P
   const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/workflows/${encodeURIComponent(workflowId)}${query}`, { headers: bridgeHeaders(bridgeToken), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`COMFYUI_BRIDGE_WORKFLOW_READ_FAILED:${response.status}`);
   return response.json() as Promise<{ workflow: BridgeWorkflowSummary; version: string; api: WorkflowDocument }>;
+}
+
+export async function requestBridgeWorkflowPreparation(name: string): Promise<BridgeWorkflowPreparation> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  if (!bridgeToken) throw new Error("COMFYUI_BRIDGE_TOKEN_MISSING");
+  const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/preparations`, {
+    method: "POST",
+    headers: bridgeHeaders(bridgeToken),
+    body: JSON.stringify({ name }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`COMFYUI_BRIDGE_PREPARATION_FAILED:${response.status}`);
+  const data = await response.json() as { preparation: BridgeWorkflowPreparation };
+  return data.preparation;
+}
+
+export async function getBridgeWorkflowPreparation(preparationId: string): Promise<BridgeWorkflowPreparation> {
+  const { baseUrl, bridgeToken } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  if (!bridgeToken) throw new Error("COMFYUI_BRIDGE_TOKEN_MISSING");
+  const response = await fetch(`${baseUrl}/xiaofeixiang/bridge/preparations/${encodeURIComponent(preparationId)}`, {
+    headers: bridgeHeaders(bridgeToken),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`COMFYUI_BRIDGE_PREPARATION_STATUS_FAILED:${response.status}`);
+  const data = await response.json() as { preparation: BridgeWorkflowPreparation };
+  return data.preparation;
 }
 
 async function registerBridgeExecution(promptId: string, workflow: WorkflowDocument, metadata: Record<string, unknown>): Promise<boolean> {

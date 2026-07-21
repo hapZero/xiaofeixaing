@@ -25,7 +25,7 @@ try:
 except ImportError:  # pragma: no cover - only used outside ComfyUI
     folder_paths = None
 
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.2.0"
 WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS: dict[str, Any] = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {}
@@ -77,10 +77,10 @@ def _authorized(request: web.Request) -> bool:
 
 
 def _same_origin_ui(request: web.Request) -> bool:
-    origin = request.headers.get("origin")
-    if not origin:
+    source = request.headers.get("origin") or request.headers.get("referer")
+    if not source:
         return False
-    parsed = urlparse(origin)
+    parsed = urlparse(source)
     return parsed.netloc == request.host and request.headers.get("x-xiaofeixiang-ui") == "1"
 
 
@@ -287,6 +287,22 @@ class ExecutionTracker:
 
 
 tracker = ExecutionTracker()
+workflow_preparations: dict[str, dict[str, Any]] = {}
+workflow_preparation_queue: deque[str] = deque()
+
+
+def _public_preparation(preparation: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in preparation.items() if key != "claimedAt"}
+
+
+def _valid_library_name(name: str) -> bool:
+    return bool(name) and name.endswith(".json") and "/" not in name and "\\" not in name and ".." not in name
+
+
+def _cleanup_preparations(now: int) -> None:
+    expired = [preparation_id for preparation_id, preparation in workflow_preparations.items() if now - int(preparation.get("updatedAt", now)) > 10 * 60 * 1000]
+    for preparation_id in expired:
+        workflow_preparations.pop(preparation_id, None)
 
 
 def _install_event_capture() -> None:
@@ -329,6 +345,81 @@ async def list_workflows(request: web.Request) -> web.Response:
     return web.json_response({"workflows": values})
 
 
+@routes.post("/xiaofeixiang/bridge/preparations")
+async def request_workflow_preparation(request: web.Request) -> web.Response:
+    _require_auth(request)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not _valid_library_name(name):
+        raise web.HTTPBadRequest(text="A valid ComfyUI workflow filename is required")
+    now = int(time.time() * 1000)
+    _cleanup_preparations(now)
+    preparation_id = hashlib.sha256(f"{name}:{now}:{os.urandom(8).hex()}".encode("utf-8")).hexdigest()[:24]
+    preparation = {
+        "id": preparation_id,
+        "name": name,
+        "status": "queued",
+        "createdAt": now,
+        "updatedAt": now,
+        "workflowId": None,
+        "version": None,
+        "error": None,
+    }
+    workflow_preparations[preparation_id] = preparation
+    workflow_preparation_queue.append(preparation_id)
+    return web.json_response({"preparation": _public_preparation(preparation)}, status=202)
+
+
+@routes.get("/xiaofeixiang/bridge/preparations/next")
+async def next_workflow_preparation(request: web.Request) -> web.Response:
+    if not _same_origin_ui(request):
+        raise web.HTTPUnauthorized(text="Preparation polling is only available to the ComfyUI interface")
+    now = int(time.time() * 1000)
+    _cleanup_preparations(now)
+    for preparation_id, preparation in workflow_preparations.items():
+        if preparation.get("status") == "preparing" and now - int(preparation.get("claimedAt", now)) > 60_000:
+            preparation.update({"status": "queued", "updatedAt": now})
+            workflow_preparation_queue.append(preparation_id)
+    while workflow_preparation_queue:
+        preparation_id = workflow_preparation_queue.popleft()
+        preparation = workflow_preparations.get(preparation_id)
+        if not preparation or preparation.get("status") != "queued":
+            continue
+        preparation.update({"status": "preparing", "claimedAt": now, "updatedAt": now})
+        return web.json_response({"preparation": _public_preparation(preparation)})
+    return web.Response(status=204)
+
+
+@routes.get("/xiaofeixiang/bridge/preparations/{preparation_id}")
+async def get_workflow_preparation(request: web.Request) -> web.Response:
+    _require_auth(request)
+    preparation = workflow_preparations.get(request.match_info["preparation_id"])
+    if not preparation:
+        raise web.HTTPNotFound(text="Workflow preparation not found")
+    return web.json_response({"preparation": _public_preparation(preparation)})
+
+
+@routes.post("/xiaofeixiang/bridge/preparations/{preparation_id}")
+async def complete_workflow_preparation(request: web.Request) -> web.Response:
+    if not _same_origin_ui(request):
+        raise web.HTTPUnauthorized(text="Preparation completion is only available to the ComfyUI interface")
+    preparation = workflow_preparations.get(request.match_info["preparation_id"])
+    if not preparation:
+        raise web.HTTPNotFound(text="Workflow preparation not found")
+    body = await request.json()
+    status = str(body.get("status") or "failed")
+    if status not in {"succeeded", "failed"}:
+        raise web.HTTPBadRequest(text="Preparation status must be succeeded or failed")
+    preparation.update({
+        "status": status,
+        "workflowId": str(body.get("workflowId") or "") or None,
+        "version": str(body.get("version") or "") or None,
+        "error": str(body.get("error") or "")[:500] or None,
+        "updatedAt": int(time.time() * 1000),
+    })
+    return web.json_response({"preparation": _public_preparation(preparation)})
+
+
 @routes.get("/xiaofeixiang/bridge/workflows/{workflow_id}")
 async def get_workflow(request: web.Request) -> web.Response:
     _require_auth(request)
@@ -349,7 +440,7 @@ async def sync_workflow(request: web.Request) -> web.Response:
     if not (_authorized(request) or _same_origin_ui(request)):
         raise web.HTTPUnauthorized(text="Bridge sync is only available to ComfyUI or Xiaofeixiang")
     body = await request.json()
-    name = str(body.get("name") or "Untitled Workflow").strip()[:160]
+    name = str(body.get("name") or "Untitled Workflow").strip().lstrip("*").strip()[:160]
     api_workflow = body.get("api")
     editor_workflow = body.get("editor")
     if not isinstance(api_workflow, dict) or not api_workflow:

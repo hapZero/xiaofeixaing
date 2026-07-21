@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { workflowBindings, workflowTestRuns } from "../../../../../db/schema";
-import { getHistoryRecord, getWorkflowHistory, historyFailed, selectWorkflowOutput, type WorkflowOutputContract } from "../../../../lib/server/comfyui";
+import { downloadWorkflowOutput, getHistoryRecord, getWorkflowHistory, historyFailed, inspectMp4DurationSeconds, selectWorkflowOutput, type WorkflowOutputContract } from "../../../../lib/server/comfyui";
 import { errorResponse, json } from "../../../../lib/server/http";
 import { getRequestUser } from "../../../../lib/server/request-user";
 
@@ -31,7 +31,17 @@ export async function GET(request: Request, context: RouteContext) {
     if (file.outputKey && file.outputKey !== contract.output) {
       await db.update(workflowBindings).set({ outputContractJson: JSON.stringify({ ...contract, output: file.outputKey }), updatedAt: new Date() }).where(eq(workflowBindings.id, binding.id));
     }
-    const result = { mediaType: contract.mediaType, file, outputUrl: `/api/workflows/test-runs/${runId}/output` };
+    let durationSeconds: number | null = null;
+    if (contract.mediaType === "video") {
+      const output = await downloadWorkflowOutput(file);
+      durationSeconds = inspectMp4DurationSeconds(output.bytes);
+      const inputSummary = JSON.parse(run.inputSummaryJson) as { duration?: unknown };
+      const requestedDuration = Number(inputSummary.duration);
+      if (durationSeconds !== null && requestedDuration > 0 && durationSeconds < requestedDuration * 0.5) {
+        throw new Error(`WORKFLOW_VIDEO_TOO_SHORT:${durationSeconds.toFixed(2)}s/${requestedDuration}s`);
+      }
+    }
+    const result = { mediaType: contract.mediaType, file, outputUrl: `/api/workflows/test-runs/${runId}/output`, durationSeconds };
     const completed = { status: "succeeded", resultJson: JSON.stringify(result), finishedAt: new Date(), updatedAt: new Date() };
     await db.update(workflowTestRuns).set(completed).where(eq(workflowTestRuns.id, runId));
     return json({ run: { ...run, ...completed, result } });

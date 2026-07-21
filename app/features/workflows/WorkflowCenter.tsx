@@ -15,7 +15,7 @@ type WorkflowTestRun = {
   status: string;
   errorMessage?: string | null;
   createdAt: string | number | Date;
-  result?: { outputUrl?: string } | null;
+  result?: { outputUrl?: string; durationSeconds?: number | null } | null;
 };
 type ConnectionState = { configured: boolean; connected: boolean; deviceCount?: number; system?: string | null; serverUrl?: string | null; message: string };
 type SparkWorkflow = {
@@ -27,6 +27,8 @@ type SparkWorkflow = {
   suggestedLabel: string;
   outputNodeTypes: string[];
 };
+
+const MAX_TEST_FRAME_BYTES = 15 * 1024 * 1024;
 
 const inputAliases: Record<string, string[]> = {
   script: ["script", "text", "prompt"],
@@ -70,6 +72,14 @@ function scoreInput(definition: WorkflowInputDefinition, inputName: string, node
   if (definition.valueType === "video" && /loadvideo|video.*load/.test(title)) score += 25;
   if (definition.key === "prompt" && /positive|正向/.test(title)) score += 30;
   if (definition.key === "prompt" && /negative|负向/.test(title)) score -= 60;
+  const semanticTitles: Partial<Record<string, RegExp>> = {
+    prompt: /(^|\s)prompt($|\s)|提示词|动作描述/,
+    duration: /(^|\s)duration($|\s)|时长/,
+    aspectRatio: /aspect.?ratio|画幅|宽高比/,
+  };
+  if (semanticTitles[definition.key]?.test(title) && /^(value|text|image|audio|video)$/.test(normalized)) score += 180;
+  const currentValue = node.inputs?.[inputName];
+  if (Array.isArray(currentValue) && currentValue.length === 2 && typeof currentValue[0] === "string") score -= 250;
   return score;
 }
 
@@ -106,6 +116,29 @@ function isApiWorkflow(value: unknown): value is WorkflowDocument {
   return nodes.length > 0 && nodes.every((node) => node && typeof node === "object" && typeof (node as WorkflowNode).class_type === "string");
 }
 
+async function readApiJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    if (response.status === 413 || text.includes("Payload Too Large")) {
+      throw new Error("首帧文件超过 15 MB，请压缩图片后重试");
+    }
+    throw new Error(response.ok ? "服务返回了无法识别的数据" : `请求失败（${response.status}）`);
+  }
+}
+
+function describeTestError(message?: string | null) {
+  if (!message) return "请检查工作流参数和输出映射";
+  if (message.startsWith("WORKFLOW_VIDEO_TOO_SHORT:")) {
+    const [actual, expected] = message.slice("WORKFLOW_VIDEO_TOO_SHORT:".length).split("/");
+    return `工作流返回的视频时长异常（实际 ${actual}，要求 ${expected}）`;
+  }
+  if (message.startsWith("WORKFLOW_INPUT_TARGET_IS_LINK:")) return "工作流输入错误地绑定到了内部连线，请重新绑定执行版";
+  return message;
+}
+
 export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => void }) {
   const [capabilities, setCapabilities] = useState<WorkflowCapabilityInfo[]>([]);
   const [bindings, setBindings] = useState<WorkflowBinding[]>([]);
@@ -129,6 +162,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const [testRunId, setTestRunId] = useState<string | null>(null);
   const [testState, setTestState] = useState("");
   const [testProgress, setTestProgress] = useState(0);
+  const [testFailed, setTestFailed] = useState(false);
   const [testResultUrl, setTestResultUrl] = useState<string | null>(null);
   const [testRuns, setTestRuns] = useState<WorkflowTestRun[]>([]);
   const [testHistoryLoading, setTestHistoryLoading] = useState(false);
@@ -142,12 +176,12 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
   const readyToSave = Boolean(workflow && outputNodeId && outputCollection && missingRequired.length === 0);
   const showBindingEditor = !binding || editingBinding;
   const testSteps = [
-    { label: "上传首帧", threshold: 14 },
-    { label: "进入队列", threshold: 38 },
-    { label: "Spark 生成", threshold: 70 },
+    { label: "上传首帧", threshold: 20 },
+    { label: "进入队列", threshold: 40 },
+    { label: "Spark 生成", threshold: 72 },
     { label: "返回视频", threshold: 100 },
   ];
-  const activeTestStep = testProgress < 38 ? 0 : testProgress < 70 ? 1 : testProgress < 100 ? 2 : 3;
+  const activeTestStep = testProgress < 40 ? 0 : testProgress < 72 ? 1 : testProgress < 100 ? 2 : 3;
 
   useEffect(() => {
     let cancelled = false;
@@ -187,22 +221,34 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     let timer = 0;
     const poll = async () => {
       const response = await fetch(`/api/workflows/test-runs/${testRunId}`, { cache: "no-store" });
-      const data = await response.json() as { run?: { status: string; errorMessage?: string; result?: { outputUrl?: string } } };
+      let data: { run?: { status: string; errorMessage?: string; result?: { outputUrl?: string; durationSeconds?: number | null } }; error?: { message?: string } };
+      try {
+        data = await readApiJson<typeof data>(response);
+        if (!response.ok) throw new Error(data.error?.message ?? `测试状态读取失败（${response.status}）`);
+      } catch (error) {
+        if (cancelled) return;
+        setTestRunId(null);
+        setTestFailed(true);
+        setTestState(`状态读取失败：${error instanceof Error ? error.message : "请重试"}`);
+        return;
+      }
       if (cancelled || !data.run) return;
       if (["submitting", "queued", "running"].includes(data.run.status)) {
         setTestState(data.run.status === "running" ? "Spark 正在生成视频…" : "任务已进入 Spark 队列…");
         setTestProgress(data.run.status === "running" ? 72 : 42);
+        setTestFailed(false);
         timer = window.setTimeout(poll, 1800);
         return;
       }
       setTestRunId(null);
       if (data.run.status === "succeeded" && data.run.result?.outputUrl) {
         setTestResultUrl(`${data.run.result.outputUrl}?t=${Date.now()}`);
-        setTestState("测试成功，工作流可以用于正式创作");
+        setTestState(data.run.result.durationSeconds ? `测试成功，已生成 ${data.run.result.durationSeconds.toFixed(2)} 秒视频` : "测试成功，工作流可以用于正式创作");
         setTestProgress(100);
+        setTestFailed(false);
       } else {
-        setTestState(`测试失败：${data.run.errorMessage ?? "请检查工作流参数和输出映射"}`);
-        setTestProgress(100);
+        setTestState(`测试失败：${describeTestError(data.run.errorMessage)}`);
+        setTestFailed(true);
       }
     };
     timer = window.setTimeout(poll, 900);
@@ -213,7 +259,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setTestHistoryLoading(true);
     try {
       const response = await fetch(`/api/workflows/bindings/${bindingId}/test`, { cache: "no-store" });
-      const data = await response.json() as { runs?: WorkflowTestRun[]; error?: { message?: string } };
+      const data = await readApiJson<{ runs?: WorkflowTestRun[]; error?: { message?: string } }>(response);
       if (!response.ok) throw new Error(data.error?.message ?? "测试记录读取失败");
       const runs = data.runs ?? [];
       setTestRuns(runs);
@@ -221,22 +267,27 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       if (!latest) {
         setTestState("");
         setTestProgress(0);
+        setTestFailed(false);
         setTestResultUrl(null);
       } else if (["submitting", "queued", "running"].includes(latest.status)) {
         setTestRunId(latest.id);
         setTestState(latest.status === "running" ? "Spark 正在生成视频…" : "任务已进入 Spark 队列…");
         setTestProgress(latest.status === "running" ? 72 : 42);
+        setTestFailed(false);
       } else if (latest.status === "succeeded" && latest.result?.outputUrl) {
-        setTestState("最近一次测试成功，可直接查看结果");
+        setTestState(latest.result.durationSeconds ? `最近一次测试成功，视频时长 ${latest.result.durationSeconds.toFixed(2)} 秒` : "最近一次测试成功，可直接查看结果");
         setTestProgress(100);
+        setTestFailed(false);
         setTestResultUrl(latest.result.outputUrl);
       } else {
-        setTestState(`最近一次测试失败：${latest.errorMessage ?? "请重新测试"}`);
-        setTestProgress(100);
+        setTestState(`最近一次测试失败：${describeTestError(latest.errorMessage)}`);
+        setTestProgress(0);
+        setTestFailed(true);
         setTestResultUrl(null);
       }
     } catch (error) {
       setTestState(error instanceof Error ? error.message : "测试记录读取失败");
+      setTestFailed(true);
     } finally {
       setTestHistoryLoading(false);
     }
@@ -259,6 +310,7 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
     setTestRunId(null);
     setTestState("");
     setTestProgress(0);
+    setTestFailed(false);
     setTestResultUrl(null);
     setTestRuns([]);
     if (current && key === "image_to_video") void loadTestRuns(current.id);
@@ -367,23 +419,31 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
       setTestState("请先选择一张首帧图片");
       return;
     }
+    if (testFrame.size > MAX_TEST_FRAME_BYTES) {
+      setTestState("提交失败：首帧不能超过 15 MB");
+      setTestProgress(0);
+      setTestFailed(true);
+      return;
+    }
     setTestResultUrl(null);
     setTestState("正在上传首帧并提交测试…");
-    setTestProgress(14);
+    setTestProgress(8);
+    setTestFailed(false);
     try {
       const form = new FormData();
       form.append("firstFrame", testFrame);
       form.append("prompt", testPrompt);
       form.append("duration", String(testDuration));
       const response = await fetch(`/api/workflows/bindings/${binding.id}/test`, { method: "POST", body: form });
-      const data = await response.json() as { run?: { id: string }; error?: { message?: string; details?: { reason?: string } } };
+      const data = await readApiJson<{ run?: { id: string }; error?: { message?: string; details?: { reason?: string } } }>(response);
       if (!response.ok || !data.run) throw new Error(data.error?.details?.reason ?? data.error?.message ?? "无法启动测试");
       setTestRunId(data.run.id);
       setTestState("任务已提交，正在等待 Spark…");
-      setTestProgress(38);
+      setTestProgress(40);
     } catch (error) {
       setTestState(`提交失败：${error instanceof Error ? error.message : "无法启动测试"}`);
-      setTestProgress(100);
+      setTestProgress(8);
+      setTestFailed(true);
     }
   };
 
@@ -421,14 +481,14 @@ export function WorkflowCenter({ onNavigate }: { onNavigate: (view: View) => voi
 
               {binding && selectedKey === "image_to_video" && !editingBinding && <section className="workflow-section workflow-test-section">
                 <div className="workflow-section-title"><b>立即测试已绑定工作流</b><span>真实调用 Spark，不会写入短剧项目</span></div>
-                <div className="workflow-test-status" aria-live="polite">
+                <div className={`workflow-test-status ${testFailed ? "failed" : ""}`} aria-live="polite">
                   <div><b>{testHistoryLoading ? "正在恢复测试记录…" : testState || "选择首帧后即可开始测试"}</b><span>{testProgress > 0 ? `${testProgress}%` : "等待开始"}</span></div>
                   <div className="test-progress-track"><i style={{ width: `${testProgress}%` }} /></div>
                   <ol>{testSteps.map((step, index) => <li key={step.label} className={testProgress >= step.threshold ? "done" : testProgress > 0 && index === activeTestStep ? "active" : ""}><i>{testProgress >= step.threshold ? "✓" : ""}</i><span>{step.label}</span></li>)}</ol>
                 </div>
                 <div className="workflow-test-layout">
                   <div className="workflow-test-form">
-                    <label className={`test-frame-upload ${testFrame ? "selected" : ""}`}><input type="file" accept="image/*" onChange={(event) => setTestFrame(event.target.files?.[0] ?? null)} /><span>{testFrame ? "✓" : "＋"}</span><div><b>{testFrame?.name ?? "上传一张分镜首帧"}</b><small>{testFrame ? `${Math.max(1, Math.round(testFrame.size / 1024))} KB` : "PNG、JPG 或 WEBP"}</small></div></label>
+                    <label className={`test-frame-upload ${testFrame ? "selected" : ""}`}><input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setTestFrame(file); setTestFailed(false); setTestProgress(0); setTestState(file ? "首帧已选择，可以开始测试" : ""); }} /><span>{testFrame ? "✓" : "＋"}</span><div><b>{testFrame?.name ?? "上传一张分镜首帧"}</b><small>{testFrame ? `${Math.max(1, Math.round(testFrame.size / 1024))} KB` : "PNG、JPG 或 WEBP · 最大 15 MB"}</small></div></label>
                     <label><span>动作描述</span><textarea value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} /></label>
                     <label className="test-duration"><span>视频时长</span><input type="number" min={1} max={30} value={testDuration} onChange={(event) => setTestDuration(Number(event.target.value))} /><i>秒</i></label>
                     <div className="test-submit-row"><AppButton primary disabled={Boolean(testRunId) || !testFrame || !testPrompt.trim()} onClick={startWorkflowTest}>{testRunId ? "Spark 生成中…" : "开始真实测试"}</AppButton><p>{testRunId ? "可以留在本页，进度会自动更新" : "点击后会立即显示提交状态"}</p></div>

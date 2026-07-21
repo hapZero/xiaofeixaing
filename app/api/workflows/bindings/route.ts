@@ -34,6 +34,10 @@ function validateContracts(workflow: WorkflowDocument, capability: NonNullable<R
     const node = workflow[target.nodeId];
     if (!node) return `输入“${definition.label}”引用的节点不存在`;
     if (!node.inputs || !(target.input in node.inputs)) return `节点 ${target.nodeId} 不包含输入 ${target.input}`;
+    const currentValue = node.inputs[target.input];
+    if (Array.isArray(currentValue) && currentValue.length === 2 && typeof currentValue[0] === "string") {
+      return `输入“${definition.label}”指向了工作流内部连线，请绑定到对外暴露的参数节点`;
+    }
   }
   if (!workflow[output.nodeId]) return "输出节点不存在";
   if (!capability.outputs.some((item) => item.mediaType === output.mediaType)) return "输出媒体类型与能力不一致";

@@ -124,6 +124,10 @@ export function applyWorkflowInputs(workflow: WorkflowDocument, contract: Record
     const node = copy[target.nodeId];
     if (!node) throw new Error(`WORKFLOW_NODE_MISSING:${target.nodeId}`);
     node.inputs ??= {};
+    const currentValue = node.inputs[target.input];
+    if (Array.isArray(currentValue) && currentValue.length === 2 && typeof currentValue[0] === "string") {
+      throw new Error(`WORKFLOW_INPUT_TARGET_IS_LINK:${payloadKey}:${target.nodeId}.${target.input}`);
+    }
     node.inputs[target.input] = payload[payloadKey];
   });
   return copy;
@@ -200,4 +204,26 @@ export async function downloadWorkflowOutput(file: ComfyOutputFile): Promise<{ b
   const response = await fetch(`${baseUrl}/view?${query}`, { headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {}, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`COMFYUI_OUTPUT_DOWNLOAD_FAILED:${response.status}`);
   return { bytes: await response.arrayBuffer(), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+}
+
+export function inspectMp4DurationSeconds(bytes: ArrayBuffer): number | null {
+  const data = new Uint8Array(bytes);
+  const marker = [0x6d, 0x76, 0x68, 0x64]; // mvhd
+  let index = -1;
+  for (let cursor = 0; cursor <= data.length - marker.length; cursor += 1) {
+    if (marker.every((value, offset) => data[cursor + offset] === value)) {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0 || index + 32 > data.length) return null;
+  const view = new DataView(bytes);
+  const version = view.getUint8(index + 4);
+  const timescaleOffset = index + (version === 1 ? 24 : 16);
+  const durationOffset = timescaleOffset + 4;
+  if (durationOffset + (version === 1 ? 8 : 4) > data.length) return null;
+  const timescale = view.getUint32(timescaleOffset);
+  if (!timescale) return null;
+  const duration = version === 1 ? Number(view.getBigUint64(durationOffset)) : view.getUint32(durationOffset);
+  return duration / timescale;
 }

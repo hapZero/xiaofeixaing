@@ -59,6 +59,8 @@ export async function POST(request: Request, context: RouteContext) {
           if (input.required) throw new Error(`TEST_INPUT_REQUIRED:${input.label}`);
           continue;
         }
+        if (value.size > 15 * 1024 * 1024) throw new Error(`${input.label}不能超过 15 MB`);
+        if (input.valueType === "image" && !value.type.startsWith("image/")) throw new Error(`${input.label}必须是图片文件`);
         const uploaded = await uploadWorkflowInput(value, `xiaofeixiang-test-${runId}`);
         payload[input.key] = uploaded.workflowValue;
         summary[input.key] = { name: value.name, size: value.size, type: value.type };

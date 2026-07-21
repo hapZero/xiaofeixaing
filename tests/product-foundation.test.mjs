@@ -134,7 +134,7 @@ test("binds ComfyUI workflows and returns generated files to their shots", async
 });
 
 test("runs bound image-to-video workflows from tests and storyboard shots", async () => {
-  const [testRoute, testStatusRoute, testOutputRoute, jobsRoute, editor, workflowCenter, migration] = await Promise.all([
+  const [testRoute, testStatusRoute, testOutputRoute, jobsRoute, editor, workflowCenter, migration, nextConfig] = await Promise.all([
     read("../app/api/workflows/bindings/[bindingId]/test/route.ts"),
     read("../app/api/workflows/test-runs/[runId]/route.ts"),
     read("../app/api/workflows/test-runs/[runId]/output/route.ts"),
@@ -142,11 +142,14 @@ test("runs bound image-to-video workflows from tests and storyboard shots", asyn
     read("../app/features/editor/EditorPage.tsx"),
     read("../app/features/workflows/WorkflowCenter.tsx"),
     read("../drizzle/0001_safe_argent.sql"),
+    read("../next.config.ts"),
   ]);
   assert.match(testRoute, /uploadWorkflowInput/);
   assert.match(testRoute, /queueWorkflow/);
   assert.match(testRoute, /orderBy\(desc\(workflowTestRuns\.createdAt\)\)/);
   assert.match(testStatusRoute, /selectWorkflowOutput/);
+  assert.match(testStatusRoute, /inspectMp4DurationSeconds/);
+  assert.match(testStatusRoute, /WORKFLOW_VIDEO_TOO_SHORT/);
   assert.match(testOutputRoute, /downloadWorkflowOutput/);
   assert.match(jobsRoute, /firstFrameAssetId/);
   assert.match(jobsRoute, /uploadWorkflowInput/);
@@ -155,5 +158,11 @@ test("runs bound image-to-video workflows from tests and storyboard shots", asyn
   assert.match(workflowCenter, /立即测试已绑定工作流/);
   assert.match(workflowCenter, /aria-live="polite"/);
   assert.match(workflowCenter, /testProgress/);
+  assert.match(workflowCenter, /testFailed/);
+  assert.match(workflowCenter, /readApiJson/);
+  assert.match(workflowCenter, /semanticTitles/);
+  assert.match(workflowCenter, /WORKFLOW_VIDEO_TOO_SHORT/);
+  assert.match(testRoute, /15 \* 1024 \* 1024/);
+  assert.match(nextConfig, /bodySizeLimit: "20mb"/);
   assert.match(migration, /CREATE TABLE `workflow_test_runs`/);
 });

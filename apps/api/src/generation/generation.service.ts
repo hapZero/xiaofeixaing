@@ -13,7 +13,6 @@ export class GenerationService {
       const state = await existing.getState();
       return { jobId: existing.id, state, duplicate: true };
     }
-
     try {
       const job = await this.queue.add(command.capability, command, { jobId: command.idempotencyKey });
       return { jobId: job.id, state: "waiting", duplicate: false };

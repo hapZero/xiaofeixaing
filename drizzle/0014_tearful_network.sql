@@ -1,0 +1,1 @@
+ALTER TABLE `segments` ADD `director_prompt` text;

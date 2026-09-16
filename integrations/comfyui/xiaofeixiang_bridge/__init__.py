@@ -123,9 +123,9 @@ def _suggest_capabilities(name: str, nodes: list[dict[str, Any]]) -> list[str]:
     if "图生视频" in name or "首尾帧" in name or "多主体视频" in name:
         return ["image_to_video"]
     if "单集合成" in name or "视频合成" in name or "视频拼接" in name:
-        return ["episode_compose"]
+        return []
     if "剧本" in name or "资产拆解" in name or "脚本" in name:
-        return ["script_to_assets"]
+        return []
 
     class_types = " ".join(str(node.get("classType", "")) for node in nodes).lower()
     if "savevideo" in class_types or "createvideo" in class_types or "videocombine" in class_types:

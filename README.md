@@ -5,7 +5,7 @@
 ## 工程结构
 
 ```text
-app/                       Web 产品（React/TypeScript，当前 Sites 部署入口）
+app/                       Web 产品（React/TypeScript，本地产品入口）
 apps/api/                  NestJS 业务 API
 apps/worker/               BullMQ 生成任务 Worker
 packages/config/           环境配置读取与校验
@@ -20,7 +20,7 @@ infra/postgres/migrations/ PostgreSQL 迁移
 docs/                      产品开发计划与架构说明
 ```
 
-Web 暂时保留在仓库根目录，是为了保持已经可看的 Sites 原型持续可部署；业务后端已经按 monorepo 工作区隔离。Web 部署链路迁移完成后再做纯物理目录移动，不改变模块边界。
+Web 暂时保留在仓库根目录；业务后端已经按 monorepo 工作区隔离。开发与验收以本地环境为准，正式部署方案在商用链路完成后确定。
 
 ## 本地启动
 

@@ -27,10 +27,10 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (typeof body.title === "string" && body.title.trim()) update.title = body.title.trim().slice(0, 120);
   if (typeof body.summary === "string") update.summary = body.summary.trim().slice(0, 10_000);
   if (typeof body.scriptText === "string") update.scriptText = body.scriptText.slice(0, 100_000);
-  if (typeof body.status === "string") update.status = body.status.slice(0, 32);
+  if (body.status === "editing" || body.status === "confirmed") update.status = body.status;
 
   const existing = await getDb()
-    .select({ id: episodes.id })
+    .select({ id: episodes.id, scriptText: episodes.scriptText })
     .from(episodes)
     .innerJoin(projects, eq(projects.id, episodes.projectId))
     .where(and(eq(episodes.id, episodeId), eq(episodes.projectId, projectId), eq(projects.ownerId, user.id)))
@@ -38,6 +38,9 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!existing[0]) return errorResponse(404, "EPISODE_NOT_FOUND", "分集不存在或无权访问");
 
   await getDb().update(episodes).set(update).where(and(eq(episodes.id, episodeId), eq(episodes.projectId, projectId)));
+  if (typeof body.scriptText === "string" && body.scriptText !== (existing[0].scriptText ?? "")) {
+    await getDb().update(projects).set({ status: "scripting", updatedAt: update.updatedAt }).where(eq(projects.id, projectId));
+  }
   const saved = await getDb().select().from(episodes).where(eq(episodes.id, episodeId)).limit(1);
   return json({ episode: saved[0] });
 }

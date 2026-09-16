@@ -1,13 +1,40 @@
-import { and, desc, eq } from "drizzle-orm";
-import { getDb, getMediaBucket } from "../../../../db";
-import { assets, generationJobs, workflowBindings } from "../../../../db/schema";
-import { applyWorkflowInputs, comfyUiConfigured, loadWorkflow, queueWorkflow, uploadWorkflowInput } from "../../../lib/server/comfyui";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { getDb } from "../../../../db";
+import { assets, characterFormReferences, characterForms, characters, generationJobs, segments, shots } from "../../../../db/schema";
+import { GenerationSubmissionError, submitGenerationJobForUser, type SubmitGenerationJobInput } from "../../../lib/server/generation-submit";
 import { errorResponse, json, readJson } from "../../../lib/server/http";
 import { getOwnedProject } from "../../../lib/server/project-access";
+import { buildStoryboardFramePrompt, type StoryboardFrameIdentity } from "../../../lib/server/segment-prompt";
+import { buildCharacterReferenceCatalog, buildGenerationReferencePayload, buildShotReferenceContext, loadEffectiveSegmentReferences, referencesForShot, type EffectiveSegmentReference } from "../../../lib/server/segment-references";
+import { buildShotVideoJobPayload, parseShotGenerationPlan, readShotVideoCapabilitySelection, shotVideoGenerationBlockers } from "../../../lib/shot-video-capability";
+import type { WorkflowCapability } from "../../../lib/workflow-capabilities";
 import { getRequestUser } from "../../../lib/server/request-user";
-import { isWorkflowCapability, workflowCapabilities } from "../../../lib/workflow-capabilities";
+import { visualAssetMediaReady, visualAssetProductionReady } from "../../../lib/visual-asset-approval";
 
-type CreateJobBody = { projectId?: string; entityType?: string; entityId?: string; capability?: string; payload?: Record<string, unknown> };
+function storyboardIdentitiesForShot(
+  shotReferences: EffectiveSegmentReference[],
+  projectCharacters: Array<{ id: string; canonicalName: string; profileJson: string }>,
+  forms: Array<{ id: string; characterId: string; name: string; description: string }>,
+): StoryboardFrameIdentity[] {
+  const identities: StoryboardFrameIdentity[] = [];
+  const seen = new Set<string>();
+  for (const reference of shotReferences) {
+    if (reference.referenceRole !== "character" || !reference.characterId || seen.has(reference.characterId)) continue;
+    seen.add(reference.characterId);
+    const character = projectCharacters.find((item) => item.id === reference.characterId);
+    if (!character) continue;
+    const form = reference.characterFormId
+      ? forms.find((item) => item.id === reference.characterFormId)
+      : forms.find((item) => item.characterId === character.id);
+    identities.push({
+      canonicalName: character.canonicalName,
+      profileJson: character.profileJson,
+      formName: form?.name ?? null,
+      formDescription: form?.description ?? null,
+    });
+  }
+  return identities;
+}
 
 export async function GET(request: Request) {
   const user = await getRequestUser(request);
@@ -22,40 +49,83 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const user = await getRequestUser(request);
   if (!user) return errorResponse(401, "AUTH_REQUIRED", "请先登录小飞象");
-  const body = await readJson<CreateJobBody>(request);
-  if (!body?.projectId || !body.entityType || !body.entityId || !body.capability || !isWorkflowCapability(body.capability)) return errorResponse(400, "INVALID_JOB", "生成任务参数不完整");
-  if (!await getOwnedProject(body.projectId, user.id)) return errorResponse(404, "PROJECT_NOT_FOUND", "项目不存在或无权访问");
-  const capability = body.capability;
-  const requirement = workflowCapabilities.find((item) => item.key === capability);
-  const db = getDb();
-  const bindingRows = await db.select().from(workflowBindings).where(and(eq(workflowBindings.ownerId, user.id), eq(workflowBindings.capability, capability), eq(workflowBindings.enabled, true))).limit(1);
-  const binding = bindingRows[0];
-  if (!binding) return errorResponse(409, "WORKFLOW_REQUIRED", `需要先配置“${requirement?.name ?? capability}”工作流`, requirement);
-  if (!comfyUiConfigured()) return errorResponse(503, "COMFYUI_NOT_CONFIGURED", "尚未配置 ComfyUI 服务地址");
-
-  const id = crypto.randomUUID();
-  const now = new Date();
-  await db.insert(generationJobs).values({ id, ownerId: user.id, projectId: body.projectId, entityType: body.entityType, entityId: body.entityId, capability, workflowBindingId: binding.id, status: "submitting", payloadJson: JSON.stringify(body.payload ?? {}), createdAt: now, updatedAt: now });
+  const body = await readJson<SubmitGenerationJobInput>(request);
+  if (!body) return errorResponse(400, "INVALID_JOB", "生成任务参数不完整");
+  const project = await getOwnedProject(body.projectId, user.id);
+  if (!project) return errorResponse(404, "PROJECT_NOT_FOUND", "项目不存在或无权访问");
   try {
-    const workflow = await loadWorkflow(binding.workflowStorageKey);
-    const contract = JSON.parse(binding.inputContractJson) as Record<string, { nodeId: string; input: string }>;
-    const payload: Record<string, unknown> = { ...(body.payload ?? {}) };
-    if (capability === "image_to_video" && typeof payload.firstFrameAssetId === "string") {
-      const asset = (await db.select().from(assets).where(and(eq(assets.id, payload.firstFrameAssetId), eq(assets.projectId, body.projectId))).limit(1))[0];
-      if (!asset?.storageKey) throw new Error("FIRST_FRAME_ASSET_NOT_FOUND");
-      const object = await getMediaBucket().get(asset.storageKey);
-      if (!object) throw new Error("FIRST_FRAME_FILE_NOT_FOUND");
-      const file = new File([await object.arrayBuffer()], asset.name || "first-frame.png", { type: object.httpMetadata?.contentType ?? "image/png" });
-      const uploaded = await uploadWorkflowInput(file, `xiaofeixiang-shot-${body.entityId}`);
-      payload.firstFrame = uploaded.workflowValue;
+    if (body.entityType === "shot" && ["storyboard_frame", "image_to_video", "multi_subject_video", "first_last_frame_video", "native_audio_video"].includes(body.capability)) {
+      const db = getDb();
+      const shot = (await db.select().from(shots).where(eq(shots.id, body.entityId)).limit(1))[0];
+      const segment = shot?.segmentId ? (await db.select().from(segments).where(eq(segments.id, shot.segmentId)).limit(1))[0] : null;
+      if (shot && segment) {
+        const segmentShots = await db.select({ id: shots.id }).from(shots).where(eq(shots.segmentId, segment.id));
+        const references = await loadEffectiveSegmentReferences(segment.id, segmentShots.map((item) => item.id), segment.referenceMode);
+        const [projectCharacters, formRows] = await Promise.all([
+          db.select().from(characters).where(eq(characters.projectId, body.projectId)),
+          db.select().from(characterForms).innerJoin(characters, eq(characters.id, characterForms.characterId)).where(eq(characters.projectId, body.projectId)),
+        ]);
+        const forms = formRows.map((row) => row.character_forms);
+        const characterCatalog = buildCharacterReferenceCatalog(projectCharacters, forms);
+        const shotReferences = referencesForShot(references, shot.id, buildShotReferenceContext({
+          shot,
+          characters: projectCharacters,
+          characterCatalog,
+        }));
+        const formIds = [...new Set(shotReferences.flatMap((reference) => reference.characterFormId ? [reference.characterFormId] : []))];
+        const formReferenceImages = formIds.length ? await db.select().from(characterFormReferences).where(inArray(characterFormReferences.characterFormId, formIds)) : [];
+        const referencePayload = buildGenerationReferencePayload(shotReferences, formReferenceImages);
+        const referencedAssets = referencePayload.referenceAssetIds.length
+          ? await db.select().from(assets).where(and(eq(assets.projectId, body.projectId), inArray(assets.id, referencePayload.referenceAssetIds)))
+          : [];
+        const missingMedia = referencePayload.referenceAssetIds.filter((assetId) => !visualAssetMediaReady(referencedAssets.find((asset) => asset.id === assetId)));
+        const unlockedReferences = shotReferences.filter((reference) => reference.required && !visualAssetProductionReady(referencedAssets.find((asset) => asset.id === reference.assetId)));
+        if (missingMedia.length || unlockedReferences.length) {
+          return errorResponse(409, "ASSETS_REQUIRED", "当前分镜引用的角色、场景或道具必须先生成并锁定", {
+            assetIds: missingMedia,
+            referenceIds: unlockedReferences.map((reference) => reference.id),
+          });
+        }
+
+        if (body.capability === "storyboard_frame") {
+          const sceneIds = shotReferences.flatMap((reference) => reference.referenceRole === "scene" && reference.assetId ? [reference.assetId] : []);
+          const sceneAssets = sceneIds.length ? await db.select({ id: assets.id, name: assets.name }).from(assets).where(inArray(assets.id, sceneIds)) : [];
+          body.payload = {
+            ...(body.payload ?? {}),
+            prompt: buildStoryboardFramePrompt({
+              shotPrompt: typeof body.payload?.prompt === "string" && body.payload.prompt.trim() ? body.payload.prompt : shot.prompt,
+              stylePreset: project.stylePreset,
+              aspectRatio: project.aspectRatio,
+              identities: storyboardIdentitiesForShot(shotReferences, projectCharacters, forms),
+              sceneName: sceneAssets[0]?.name ?? null,
+            }),
+            aspectRatio: project.aspectRatio,
+            stylePreset: project.stylePreset,
+            ...referencePayload,
+          };
+        } else {
+          body.payload = { ...(body.payload ?? {}), ...referencePayload };
+          if (["image_to_video", "multi_subject_video", "first_last_frame_video"].includes(body.capability)) {
+            const plan = parseShotGenerationPlan(shot.generationPlanJson);
+            const capability = readShotVideoCapabilitySelection(plan) as WorkflowCapability;
+            const blockers = shotVideoGenerationBlockers({ capability, plan, firstFrameAssetId: shot.firstFrameAssetId });
+            if (blockers.length) {
+              return errorResponse(409, "SHOT_VIDEO_INPUTS_REQUIRED", `当前分镜还缺少：${blockers.join("、")}`, { blockers, capability });
+            }
+            body.capability = capability;
+            body.payload = buildShotVideoJobPayload({
+              shot,
+              capability,
+              segmentPipeline: (body.payload as Record<string, unknown> | undefined)?.segmentPipeline === true,
+              referencePayload: referencePayload as Record<string, unknown>,
+            });
+          }
+        }
+      }
     }
-    const prepared = applyWorkflowInputs(workflow, contract, payload);
-    const queued = await queueWorkflow(prepared, { executionType: "generation_job", executionId: id, ownerId: user.id, projectId: body.projectId, capability, bindingId: binding.id });
-    await db.update(generationJobs).set({ status: "queued", comfyPromptId: queued.promptId, startedAt: new Date(), updatedAt: new Date() }).where(eq(generationJobs.id, id));
-    return json({ job: { id, status: "queued", promptId: queued.promptId, progressSource: queued.bridgeRegistered ? "bridge" : "polling" } }, { status: 202 });
+    return json({ job: await submitGenerationJobForUser(user.id, body) }, { status: 202 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "UNKNOWN_GENERATION_ERROR";
-    await db.update(generationJobs).set({ status: "failed", errorCode: message.split(":")[0], errorMessage: message, finishedAt: new Date(), updatedAt: new Date() }).where(eq(generationJobs.id, id));
-    return errorResponse(502, "GENERATION_SUBMIT_FAILED", "任务未能提交到 ComfyUI", { jobId: id, reason: message });
+    if (error instanceof GenerationSubmissionError) return errorResponse(error.status, error.code, error.message, error.details);
+    return errorResponse(500, "GENERATION_SUBMIT_FAILED", "生成任务提交失败");
   }
 }

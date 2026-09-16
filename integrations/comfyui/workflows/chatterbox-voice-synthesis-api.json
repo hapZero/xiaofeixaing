@@ -1,0 +1,47 @@
+{
+  "1": {
+    "inputs": {
+      "audio": "voice_reference.wav"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "音色参考 voiceReference"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": "你好，这是中文测试台词。",
+      "language": "Chinese (zh)",
+      "exaggeration": 0.5,
+      "cfg_weight": 0.5,
+      "temperature": 0.8,
+      "repetition_penalty": 2,
+      "min_p": 0.05,
+      "top_p": 1,
+      "seed": 0,
+      "audio_prompt": [
+        "1",
+        0
+      ],
+      "use_cpu": false,
+      "keep_model_loaded": true
+    },
+    "class_type": "FL_ChatterboxMultilingualTTS",
+    "_meta": {
+      "title": "对白 TTS text"
+    }
+  },
+  "3": {
+    "inputs": {
+      "audio": [
+        "2",
+        0
+      ],
+      "filename_prefix": "xiaofeixiang_voice"
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "输出 audio (FLAC)"
+    }
+  }
+}

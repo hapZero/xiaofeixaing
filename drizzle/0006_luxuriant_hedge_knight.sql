@@ -1,0 +1,1 @@
+ALTER TABLE `character_forms` ADD `description` text DEFAULT '' NOT NULL;

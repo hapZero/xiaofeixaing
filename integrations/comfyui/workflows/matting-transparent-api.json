@@ -1,0 +1,45 @@
+{
+  "10": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "原图 referenceImage"
+    }
+  },
+  "11": {
+    "inputs": {
+      "images": [
+        "10",
+        0
+      ],
+      "rem_mode": "RMBG-2.0",
+      "image_output": "Hide",
+      "save_prefix": "matting_image",
+      "add_background": "none",
+      "refine_foreground": true
+    },
+    "class_type": "easy imageRemBg",
+    "_meta": {
+      "title": "抠图 RemBg"
+    }
+  },
+  "12": {
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "mask": [
+        "11",
+        1
+      ],
+      "filename_prefix": "matting_image"
+    },
+    "class_type": "SaveImageWithAlpha",
+    "_meta": {
+      "title": "输出透明底 SaveImageWithAlpha"
+    }
+  }
+}

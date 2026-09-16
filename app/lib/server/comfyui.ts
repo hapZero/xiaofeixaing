@@ -1,12 +1,15 @@
 import { env } from "cloudflare:workers";
 import { getMediaBucket } from "../../../db";
+import { readComfyFailureDetail } from "../workflow-input-apply";
+import { saveImageNodeIds, selectAllWorkflowImageOutputs } from "../workflow-output-select";
+export { saveImageNodeIds, selectAllWorkflowImageOutputs } from "../workflow-output-select";
 
 type RuntimeEnv = { COMFYUI_BASE_URL?: string; COMFYUI_API_KEY?: string; COMFYUI_CLIENT_ID?: string; COMFYUI_BRIDGE_TOKEN?: string };
 type InputTarget = { nodeId: string; input: string };
 type WorkflowDocument = Record<string, { inputs?: Record<string, unknown>; [key: string]: unknown }>;
 export type WorkflowInputTarget = { nodeId: string; input: string };
-export type WorkflowOutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json" };
-export type ComfyOutputFile = { filename: string; subfolder?: string; type?: string; outputKey?: string };
+export type WorkflowOutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json"; collectAllImages?: boolean };
+export type ComfyOutputFile = { filename: string; subfolder?: string; type?: string; outputKey?: string; nodeId?: string };
 export type StoredWorkflowFormat = "api" | "editor" | "unknown";
 export type StoredWorkflowAnalysis = {
   name: string;
@@ -61,6 +64,19 @@ export type BridgeWorkflowPreparation = {
   error: string | null;
 };
 
+export function bridgeExecutionFailureMessage(snapshot?: BridgeExecutionSnapshot | null): string | null {
+  if (!snapshot || snapshot.status !== "failed") return null;
+  const error = snapshot.error;
+  if (error && typeof error === "object") {
+    const nodeId = "node_id" in error ? String(error.node_id ?? "") : "";
+    const nodeType = "node_type" in error ? String(error.node_type ?? "") : "";
+    const detail = "exception_message" in error ? String(error.exception_message ?? "").trim() : "";
+    const label = [nodeId, nodeType].filter(Boolean).join(" · ");
+    return label && detail ? `${label}：${detail}` : detail || "ComfyUI 工作流执行失败";
+  }
+  return "ComfyUI 工作流执行失败";
+}
+
 function config() {
   const runtime = env as unknown as RuntimeEnv;
   return {
@@ -92,12 +108,14 @@ export function getComfyUiServerUrl(): string {
 }
 
 function suggestStoredCapability(name: string): { key: string | null; label: string } {
-  if (/人物一致性/.test(name)) return { key: "character_image", label: "角色标准图" };
-  if (/多图.*图片|文生图/.test(name)) return { key: "storyboard_frame", label: "分镜首帧" };
+  if (/人物一致性/.test(name)) return { key: "character_image", label: "人物一致性生成器" };
+  if (/多主体视频/.test(name)) return { key: "multi_subject_video", label: "多人镜头视频" };
+  if (/首尾帧/.test(name)) return { key: "first_last_frame_video", label: "首尾帧视频" };
   if (/音频口型|口型/.test(name)) return { key: "lip_sync", label: "口型同步" };
   if (/音频参考/.test(name)) return { key: "native_audio_video", label: "原生有声视频" };
-  if (/图生视频|首尾帧|多主体视频/.test(name)) return { key: "image_to_video", label: "图生视频" };
-  if (/换角色/.test(name)) return { key: null, label: "视频角色替换（待增加能力）" };
+  if (/图生视频/.test(name)) return { key: "image_to_video", label: "图生视频" };
+  if (/多图.*图片|文生图/.test(name)) return { key: null, label: "图片生成（需按用途确认）" };
+  if (/换角色/.test(name)) return { key: null, label: "视频角色替换（辅助工具）" };
   return { key: null, label: "待人工确认" };
 }
 
@@ -259,21 +277,15 @@ export async function loadWorkflow(storageKey: string): Promise<WorkflowDocument
   return workflow;
 }
 
-export function applyWorkflowInputs(workflow: WorkflowDocument, contract: Record<string, InputTarget>, payload: Record<string, unknown>): WorkflowDocument {
-  const copy = structuredClone(workflow);
-  Object.entries(contract).forEach(([payloadKey, target]) => {
-    if (!(payloadKey in payload)) return;
-    const node = copy[target.nodeId];
-    if (!node) throw new Error(`WORKFLOW_NODE_MISSING:${target.nodeId}`);
-    node.inputs ??= {};
-    const currentValue = node.inputs[target.input];
-    if (Array.isArray(currentValue) && currentValue.length === 2 && typeof currentValue[0] === "string") {
-      throw new Error(`WORKFLOW_INPUT_TARGET_IS_LINK:${payloadKey}:${target.nodeId}.${target.input}`);
-    }
-    node.inputs[target.input] = payload[payloadKey];
-  });
-  return copy;
-}
+export { applyWorkflowInputs, assertWorkflowInputsApplied, ensureOptionalReferenceImage, scrubMappedMediaPlaceholders } from "../workflow-input-apply";
+export {
+  buildLtxAudioVideoPrompt,
+  buildLtxImageToVideoPrompt,
+  isLtxAudioVideoWorkflow,
+  isLtxVideoWorkflow,
+  prepareLtxVideoPayload,
+  prepareLtxWorkflowExecution,
+} from "../ltx-video-prompt";
 
 export async function queueWorkflow(workflow: WorkflowDocument, metadata: Record<string, unknown> = {}): Promise<{ promptId: string; bridgeRegistered: boolean }> {
   const { baseUrl, apiKey, clientId } = config();
@@ -284,7 +296,10 @@ export async function queueWorkflow(workflow: WorkflowDocument, metadata: Record
     body: JSON.stringify({ prompt: workflow, client_id: clientId }),
     signal: AbortSignal.timeout(20_000),
   });
-  if (!response.ok) throw new Error(`COMFYUI_QUEUE_FAILED:${response.status}`);
+  if (!response.ok) {
+    const detail = await readComfyFailureDetail(response);
+    throw new Error(`COMFYUI_QUEUE_FAILED:${response.status}${detail ? `:${detail}` : ""}`);
+  }
   const result = await response.json() as { prompt_id?: string };
   if (!result.prompt_id) throw new Error("COMFYUI_PROMPT_ID_MISSING");
   const bridgeRegistered = await registerBridgeExecution(result.prompt_id, workflow, metadata);
@@ -316,6 +331,20 @@ export async function getWorkflowHistory(promptId: string): Promise<unknown> {
   return response.json();
 }
 
+export async function workflowQueuePresence(promptId: string): Promise<boolean | null> {
+  const { baseUrl, apiKey } = config();
+  if (!baseUrl) throw new Error("COMFYUI_NOT_CONFIGURED");
+  try {
+    const response = await fetch(`${baseUrl}/queue`, { headers: headers(apiKey), signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) return null;
+    const data = await response.json() as { queue_running?: unknown[]; queue_pending?: unknown[] };
+    const entries = [...(Array.isArray(data.queue_running) ? data.queue_running : []), ...(Array.isArray(data.queue_pending) ? data.queue_pending : [])];
+    return entries.some((entry) => Array.isArray(entry) && entry.some((value) => value === promptId));
+  } catch {
+    return null;
+  }
+}
+
 export function getHistoryRecord(history: unknown, promptId: string): Record<string, unknown> | null {
   if (!history || typeof history !== "object") return null;
   const record = (history as Record<string, unknown>)[promptId];
@@ -327,17 +356,55 @@ export function historyFailed(record: Record<string, unknown>): boolean {
   return status?.status_str === "error";
 }
 
+export function historyExecutionError(record: Record<string, unknown>): string | null {
+  const messages = (record.status as { messages?: unknown[] } | undefined)?.messages;
+  if (!Array.isArray(messages)) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (!Array.isArray(entry) || entry[0] !== "execution_error") continue;
+    const detail = entry[1];
+    if (!detail || typeof detail !== "object") continue;
+    const nodeId = "node_id" in detail ? String((detail as { node_id?: unknown }).node_id ?? "") : "";
+    const nodeType = "node_type" in detail ? String((detail as { node_type?: unknown }).node_type ?? "") : "";
+    const message = "exception_message" in detail ? String((detail as { exception_message?: unknown }).exception_message ?? "").trim() : "";
+    if (!message) continue;
+    const label = [nodeId, nodeType].filter(Boolean).join(" · ");
+    return label ? `${label}：${message}` : message;
+  }
+  return null;
+}
+
 export function selectWorkflowOutput(record: Record<string, unknown>, contract: WorkflowOutputContract): ComfyOutputFile | null {
+  return selectWorkflowOutputs(record, contract)[0] ?? null;
+}
+
+export function selectWorkflowOutputs(record: Record<string, unknown>, contract: WorkflowOutputContract): ComfyOutputFile[] {
   const outputs = record.outputs as Record<string, Record<string, unknown>> | undefined;
   const nodeOutput = outputs?.[contract.nodeId];
-  if (!nodeOutput) return null;
+  if (!nodeOutput) return [];
   const collections: Array<[string, unknown]> = [[contract.output, nodeOutput[contract.output]], ...Object.entries(nodeOutput).filter(([key]) => key !== contract.output)];
   for (const [outputKey, candidates] of collections) {
     if (!Array.isArray(candidates)) continue;
-    const first = candidates[0] as Partial<ComfyOutputFile> | undefined;
-    if (first?.filename) return { filename: first.filename, subfolder: first.subfolder, type: first.type, outputKey };
+    const files = candidates.flatMap((candidate) => {
+      const file = candidate as Partial<ComfyOutputFile> | undefined;
+      return file?.filename ? [{ filename: file.filename, subfolder: file.subfolder, type: file.type, outputKey, nodeId: contract.nodeId }] : [];
+    });
+    if (files.length) return files;
   }
-  return null;
+  return [];
+}
+
+export function resolveWorkflowOutputs(
+  record: Record<string, unknown>,
+  contract: WorkflowOutputContract,
+  options?: { capability?: string; workflow?: WorkflowDocument | null },
+) {
+  const collectAll = contract.collectAllImages || options?.capability === "character_image";
+  if (collectAll && contract.mediaType === "image") {
+    const files = selectAllWorkflowImageOutputs(record, options?.workflow);
+    if (files.length) return files;
+  }
+  return selectWorkflowOutputs(record, contract);
 }
 
 export function selectWorkflowInlineOutput(record: Record<string, unknown>, contract: WorkflowOutputContract): unknown {
@@ -377,4 +444,18 @@ export function inspectMp4DurationSeconds(bytes: ArrayBuffer): number | null {
   if (!timescale) return null;
   const duration = version === 1 ? Number(view.getBigUint64(durationOffset)) : view.getUint32(durationOffset);
   return duration / timescale;
+}
+
+export function inspectAudioDurationSeconds(bytes: ArrayBuffer): number | null {
+  const view = new DataView(bytes);
+  const header = new TextDecoder().decode(new Uint8Array(bytes, 0, 12));
+  if (header.startsWith("RIFF") && header.includes("WAVE") && bytes.byteLength >= 44) {
+    const byteRate = view.getUint32(28, true);
+    const dataSize = view.getUint32(40, true);
+    if (byteRate > 0 && dataSize > 0) return dataSize / byteRate;
+  }
+  if (header.startsWith("ID3") || (view.getUint8(0) === 0xff && (view.getUint8(1) & 0xe0) === 0xe0)) {
+    return inspectMp4DurationSeconds(bytes);
+  }
+  return null;
 }

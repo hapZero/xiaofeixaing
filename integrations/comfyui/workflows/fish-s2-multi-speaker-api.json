@@ -1,0 +1,67 @@
+{
+  "1": {
+    "inputs": {
+      "audio": "speaker1.wav"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Speaker 1 参考 audio"
+    }
+  },
+  "2": {
+    "inputs": {
+      "audio": "speaker2.wav"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "Speaker 2 参考 audio"
+    }
+  },
+  "3": {
+    "inputs": {
+      "model_path": "s2-pro",
+      "text": "[speaker_1]: Hello, I'm speaker one.\n[speaker_2]: And I'm speaker two!",
+      "language": "auto",
+      "device": "auto",
+      "precision": "auto",
+      "attention": "auto",
+      "max_new_tokens": 0,
+      "chunk_length": 200,
+      "temperature": 0.7,
+      "top_p": 0.7,
+      "repetition_penalty": 1.2,
+      "seed": 42,
+      "keep_model_loaded": true,
+      "offload_to_cpu": false,
+      "compile_model": false,
+      "pause_after_speaker": 0.3,
+      "num_speakers": "2",
+      "num_speakers.speaker_1_audio": [
+        "1",
+        0
+      ],
+      "num_speakers.speaker_1_ref_text": "",
+      "num_speakers.speaker_2_audio": [
+        "2",
+        0
+      ],
+      "num_speakers.speaker_2_ref_text": ""
+    },
+    "class_type": "FishS2MultiSpeakerTTS",
+    "_meta": {
+      "title": "多人台词 text"
+    }
+  },
+  "4": {
+    "inputs": {
+      "audio": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "输出 audio"
+    }
+  }
+}

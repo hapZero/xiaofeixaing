@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { getD1, getDb } from "../../../../../db";
 import { canvasEdges, canvasNodes } from "../../../../../db/schema";
 import { errorResponse, json, readJson } from "../../../../lib/server/http";
@@ -35,7 +35,16 @@ export async function PUT(request: Request, context: RouteContext) {
   if (!body || !Array.isArray(body.nodes) || !Array.isArray(body.edges)) return errorResponse(400, "INVALID_CANVAS", "画布数据不完整");
   if (body.nodes.length > 500 || body.edges.length > 1000) return errorResponse(413, "CANVAS_TOO_LARGE", "单个画布最多包含 500 个节点和 1000 条连线");
   const nodeIds = new Set(body.nodes.map((node) => node.id));
+  const edgeIds = new Set(body.edges.map((edge) => edge.id));
+  if (nodeIds.size !== body.nodes.length || edgeIds.size !== body.edges.length) return errorResponse(400, "DUPLICATE_CANVAS_ID", "画布包含重复的节点或连线编号");
   if (body.edges.some((edge) => !nodeIds.has(edge.fromNodeId) || !nodeIds.has(edge.toNodeId))) return errorResponse(400, "INVALID_EDGE", "连线引用了不存在的节点");
+
+  const db = getDb();
+  const [foreignNodes, foreignEdges] = await Promise.all([
+    body.nodes.length ? db.select({ id: canvasNodes.id }).from(canvasNodes).where(and(inArray(canvasNodes.id, [...nodeIds]), ne(canvasNodes.projectId, projectId))).limit(1) : [],
+    body.edges.length ? db.select({ id: canvasEdges.id }).from(canvasEdges).where(and(inArray(canvasEdges.id, [...edgeIds]), ne(canvasEdges.projectId, projectId))).limit(1) : [],
+  ]);
+  if (foreignNodes.length || foreignEdges.length) return errorResponse(409, "CANVAS_ID_CONFLICT", "画布编号与其他项目冲突，请刷新画布后重试");
 
   const now = Math.floor(Date.now() / 1000);
   const d1 = getD1();

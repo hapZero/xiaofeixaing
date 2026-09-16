@@ -2,13 +2,14 @@ import type { CreateGenerationJobCommand, WorkflowCapability } from "@xiaofeixia
 import { IsIn, IsNotEmpty, IsObject, IsString, IsUUID, Matches, MaxLength } from "class-validator";
 
 const capabilities: WorkflowCapability[] = [
-  "script_to_assets", "character_image", "scene_image", "storyboard_frame", "image_to_video",
-  "voice_synthesis", "lip_sync", "native_audio_video", "ambient_audio", "episode_compose",
+  "image_generation", "video_generation",
+  "character_image", "scene_image", "storyboard_frame", "image_to_video", "multi_subject_video", "first_last_frame_video",
+  "voice_synthesis", "lip_sync", "native_audio_video", "ambient_audio",
 ];
 
 export class CreateGenerationJobDto implements CreateGenerationJobCommand {
   @IsUUID() projectId!: string;
-  @IsIn(["project", "episode", "asset", "shot"]) entityType!: CreateGenerationJobCommand["entityType"];
+  @IsIn(["project", "episode", "segment", "asset", "shot"]) entityType!: CreateGenerationJobCommand["entityType"];
   @IsUUID() entityId!: string;
   @IsIn(capabilities) capability!: WorkflowCapability;
   @IsObject() payload!: Record<string, unknown>;

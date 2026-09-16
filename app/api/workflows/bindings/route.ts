@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { getDb, getMediaBucket } from "../../../../db";
-import { workflowBindings, workflowVersions } from "../../../../db/schema";
+import { workflowBindings, workflowTestRuns, workflowVersions } from "../../../../db/schema";
 import { getBridgeWorkflow } from "../../../lib/server/comfyui";
 import { errorResponse, json, readJson } from "../../../lib/server/http";
 import { getRequestUser } from "../../../lib/server/request-user";
@@ -9,7 +9,7 @@ import { getWorkflowCapability, isWorkflowCapability } from "../../../lib/workfl
 type WorkflowNode = { class_type?: string; inputs?: Record<string, unknown>; [key: string]: unknown };
 type WorkflowDocument = Record<string, WorkflowNode>;
 type InputContract = Record<string, { nodeId: string; input: string }>;
-type OutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json" };
+type OutputContract = { nodeId: string; output: string; mediaType: "image" | "video" | "audio" | "json"; collectAllImages?: boolean };
 type SaveBindingBody = {
   capability?: string;
   name?: string;
@@ -27,10 +27,6 @@ function isWorkflowDocument(value: unknown): value is WorkflowDocument {
   return nodes.length > 0 && nodes.every((node) => node && typeof node === "object" && typeof (node as WorkflowNode).class_type === "string");
 }
 
-function normalizedWorkflowName(name: string) {
-  return name.replace(/^workflows\//i, "").replace(/\.json$/i, "").trim().toLowerCase();
-}
-
 function validateContracts(workflow: WorkflowDocument, capability: NonNullable<ReturnType<typeof getWorkflowCapability>>, inputs: InputContract, output: OutputContract): string | null {
   for (const definition of capability.inputs) {
     const target = inputs[definition.key];
@@ -45,6 +41,12 @@ function validateContracts(workflow: WorkflowDocument, capability: NonNullable<R
     if (Array.isArray(currentValue) && currentValue.length === 2 && typeof currentValue[0] === "string") {
       return `输入“${definition.label}”指向了工作流内部连线，请绑定到对外暴露的参数节点`;
     }
+  }
+  if (output.collectAllImages) {
+    if (!capability.outputs.some((item) => item.mediaType === output.mediaType)) return "输出媒体类型与能力不一致";
+    const saveImageCount = Object.values(workflow).filter((node) => /saveimage/i.test(node.class_type ?? "")).length;
+    if (!saveImageCount) return "工作流中没有 SaveImage 输出节点，无法归档标准图包";
+    return null;
   }
   if (!workflow[output.nodeId]) return "输出节点不存在";
   if (!capability.outputs.some((item) => item.mediaType === output.mediaType)) return "输出媒体类型与能力不一致";
@@ -65,6 +67,23 @@ function publicBinding(binding: typeof workflowBindings.$inferSelect) {
     createdAt: binding.createdAt,
     updatedAt: binding.updatedAt,
   };
+}
+
+function bindingExecutionChanged(
+  existing: typeof workflowBindings.$inferSelect,
+  next: {
+    inputContract: InputContract;
+    outputContract: OutputContract;
+    sourceVersion: string | null;
+    workflowStorageKey: string;
+  },
+): boolean {
+  if (existing.sourceVersion !== next.sourceVersion) return true;
+  if (existing.workflowStorageKey !== next.workflowStorageKey) return true;
+  const previousInput = JSON.parse(existing.inputContractJson) as InputContract;
+  const previousOutput = JSON.parse(existing.outputContractJson) as OutputContract;
+  return JSON.stringify(previousInput) !== JSON.stringify(next.inputContract)
+    || JSON.stringify(previousOutput) !== JSON.stringify(next.outputContract);
 }
 
 export async function GET(request: Request) {
@@ -105,15 +124,6 @@ export async function POST(request: Request) {
   const db = getDb();
   const existingRows = await db.select().from(workflowBindings).where(and(eq(workflowBindings.ownerId, user.id), eq(workflowBindings.capability, body.capability))).limit(1);
   const existing = existingRows[0];
-  if (body.bridgeWorkflowId) {
-    const normalizedBridgeName = normalizedWorkflowName(bridgeName ?? body.name ?? "");
-    const occupied = (await db.select().from(workflowBindings).where(eq(workflowBindings.ownerId, user.id)))
-      .find((item) => item.id !== existing?.id && (item.sourceWorkflowId === body.bridgeWorkflowId || (normalizedBridgeName && normalizedWorkflowName(item.name).endsWith(normalizedBridgeName))));
-    if (occupied) {
-      const occupiedCapability = getWorkflowCapability(occupied.capability);
-      return errorResponse(409, "WORKFLOW_ALREADY_BOUND", `这个工作流已绑定到“${occupiedCapability?.name ?? occupied.name}”，请为当前能力选择其他工作流`);
-    }
-  }
   const id = existing?.id ?? crypto.randomUUID();
   const storageKey = body.bridgeWorkflowId && bridgeVersion
     ? `workflows/${user.id}/versions/${body.bridgeWorkflowId}/${bridgeVersion}.json`
@@ -140,6 +150,18 @@ export async function POST(request: Request) {
   };
   if (existing) {
     await db.update(workflowBindings).set(values).where(eq(workflowBindings.id, existing.id));
+    if (bindingExecutionChanged(existing, {
+      inputContract: body.inputContract,
+      outputContract: body.outputContract,
+      sourceVersion: bridgeVersion,
+      workflowStorageKey: storageKey,
+    })) {
+      await db.insert(workflowTestRuns).values({
+        id: crypto.randomUUID(), ownerId: user.id, workflowBindingId: existing.id, capability: body.capability,
+        status: "invalidated", inputSummaryJson: "{}", errorMessage: "工作流执行版或字段映射已变更，需要重新测试",
+        finishedAt: now, createdAt: now, updatedAt: now,
+      });
+    }
   } else {
     await db.insert(workflowBindings).values({ id, ownerId: user.id, capability: body.capability, ...values, createdAt: now });
   }

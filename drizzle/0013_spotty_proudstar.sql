@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `source_text` text;

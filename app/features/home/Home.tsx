@@ -2,98 +2,70 @@
 
 import { useState } from "react";
 import { StudioShell } from "../../components/layout/StudioShell";
-import { Pill } from "../../components/ui";
-import { videoImages } from "../studio/media";
-import type { View } from "../studio/types";
+import { useSettings } from "../settings/SettingsProvider";
+import { projectAspectRatios, projectStylePresets } from "../../lib/project-presets";
+import type { ProjectSummary, View } from "../studio/types";
+import type { CreationMode } from "../drama/DramaHub";
 
-export function Home({ onNavigate }: { onNavigate: (view: View) => void }) {
-  const [agentTab, setAgentTab] = useState<"创作 Agent" | "短剧 Agent">("创作 Agent");
+export function Home({ onNavigate, onOpenProject, onStartCreation }: { onNavigate: (view: View) => void; onOpenProject: (project: ProjectSummary, target: View) => void; onStartCreation: (mode: CreationMode) => void }) {
+  const { openSettings } = useSettings();
   const [prompt, setPrompt] = useState("");
-  const [toast, setToast] = useState(false);
-  const send = () => {
-    setToast(true);
-    window.setTimeout(() => setToast(false), 1800);
+  const [creating, setCreating] = useState(false);
+  const [stylePreset, setStylePreset] = useState<(typeof projectStylePresets)[number]>(projectStylePresets[0]);
+  const [aspectRatio, setAspectRatio] = useState<(typeof projectAspectRatios)[number]>(projectAspectRatios[0]);
+  const [error, setError] = useState("");
+
+  const createFromIdea = async () => {
+    const idea = prompt.trim();
+    if (!idea || creating) {
+      if (!idea) setError("请先写下你想创作的故事");
+      return;
+    }
+    setCreating(true);
+    setError("");
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "新的 AI 短剧", sourceType: "ai_script", synopsis: idea, episodeCount: 3, stylePreset, aspectRatio }),
+      });
+      const data = await response.json() as { project?: ProjectSummary; error?: { message?: string } };
+      if (!response.ok || !data.project) throw new Error(data.error?.message ?? "剧本生成失败");
+      onOpenProject(data.project, "script");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "剧本生成失败");
+    } finally {
+      setCreating(false);
+    }
   };
-  const tools = [
-    ["沉浸式短片", "一句灵感，生成有电影感的完整片段", "✦"],
-    ["生成图片", "角色、场景与视觉创意快速出图", "▧"],
-    ["产品推广", "把商品自然融入故事和镜头", "◈"],
-    ["智能长视频", "长内容自动理解与编排", "▷"],
-  ];
+
   return (
     <StudioShell view="home" onNavigate={onNavigate}>
       <div className="home-page page-scroll">
-        <div className="announcement"><span>NEW</span> 小飞象短剧 Agent 已支持角色音色与分镜版本管理 <button>×</button></div>
         <section className="agent-hero">
-          <p className="eyebrow">HI，创作者</p>
+          <p className="eyebrow">小飞象短剧 Agent</p>
           <h1>今天想把什么故事拍出来？</h1>
-          <div className="agent-tabs">
-            {(["创作 Agent", "短剧 Agent"] as const).map((tab) => (
-              <button key={tab} className={agentTab === tab ? "active" : ""} onClick={() => setAgentTab(tab)}>{tab}</button>
-            ))}
-          </div>
           <div className="composer-card">
-            <textarea
-              aria-label="描述你的创作想法"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder={agentTab === "短剧 Agent" ? "描述故事，或上传剧本开始制作一部短剧…" : "描述你的想法，用 @ 引用角色、图片、视频或音频…"}
-            />
+            <textarea aria-label="描述你的短剧创意" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述故事主题、人物关系和想要的情绪…" />
             <div className="composer-bottom">
-              <div className="composer-tools">
-                <button aria-label="添加附件">＋</button>
-                <Pill>通用模型⌄</Pill>
-                <Pill>16:9⌄</Pill>
-                <Pill>自动时长⌄</Pill>
-              </div>
-              <div className="composer-actions">
-                <label className="canvas-toggle"><span>画布模式</span><input type="checkbox" /><i /></label>
-                <button className="send-button" onClick={agentTab === "短剧 Agent" ? () => onNavigate("drama") : send}>↑</button>
-              </div>
+              <div className="home-quick-settings"><select aria-label="视觉类型" value={stylePreset} onChange={(event) => setStylePreset(event.target.value as typeof stylePreset)}>{projectStylePresets.map((item) => <option key={item}>{item}</option>)}</select><select aria-label="成片画幅" value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as typeof aspectRatio)}>{projectAspectRatios.map((item) => <option key={item}>{item}</option>)}</select><p className="home-real-route-note">真实生成三集可编辑剧本</p></div>
+              <button className="send-button" aria-label="生成短剧剧本" disabled={creating} onClick={() => void createFromIdea()}>{creating ? "…" : "↑"}</button>
             </div>
           </div>
+          {error && <div className="home-idea-error" role="alert"><span>{error}</span><button type="button" onClick={() => openSettings("text")}>打开设置</button></div>}
           <div className="prompt-chips">
-            <button onClick={() => setPrompt("做一个发生在废弃学校里的悬疑短片")}>废弃学校悬疑短片</button>
+            <button onClick={() => setPrompt("做一个发生在废弃学校里的悬疑短剧")}>废弃学校悬疑短剧</button>
             <button onClick={() => setPrompt("一位古代将军穿越到现代便利店")}>古代将军来到便利店</button>
-            <button onClick={() => setPrompt("根据产品图片制作一支电影感广告")}>电影感产品广告</button>
           </div>
         </section>
         <section className="home-section">
-          <div className="section-title"><div><h2>开始创作</h2><p>选择一种方式，让想法更快落地</p></div><button>全部能力 →</button></div>
-          <div className="tool-grid">
-            {tools.map(([title, desc, icon], index) => (
-              <button className="tool-card" key={title} onClick={index === 0 ? send : undefined}>
-                <span className={`tool-icon tool-${index}`}>{icon}</span>
-                <div><h3>{title}</h3><p>{desc}</p></div><b>↗</b>
-              </button>
-            ))}
-            <button className="tool-card drama-feature" onClick={() => onNavigate("drama")}>
-              <span className="tool-icon tool-drama">▣</span>
-              <div><div className="mini-tag">核心能力</div><h3>短剧 Agent 2.0</h3><p>从剧本、资产到分镜成片的完整创作流程</p></div><b>↗</b>
-            </button>
-            <button className="tool-card canvas-feature" onClick={() => onNavigate("canvas")}>
-              <span className="tool-icon tool-canvas">⌘</span>
-              <div><h3>自由画布</h3><p>组织角色、场景和衍生内容的无限空间</p></div><b>↗</b>
-            </button>
-          </div>
-        </section>
-        <section className="home-section showcase-section">
-          <div className="section-title"><div><h2>精选创作</h2><p>看看大家正在用小飞象讲什么故事</p></div><button>换一批 ↻</button></div>
-          <div className="showcase-grid">
-            {[
-              ["旧教室的第三排", "悬疑 · 写实电影", videoImages[0]],
-              ["失重之后", "科幻 · 概念短片", videoImages[1]],
-              ["春日来信", "都市 · 情感短剧", videoImages[2]],
-            ].map(([title, category, image]) => (
-              <article className="showcase-card" key={title} style={{ backgroundImage: `url(${image})` }}>
-                <span className="play-orb">▶</span>
-                <div><p>{category}</p><h3>{title}</h3></div>
-              </article>
-            ))}
+          <div className="section-title"><div><h2>开始创作</h2><p>选择适合你的方式，创建或继续一个真实短剧项目</p></div></div>
+          <div className="tool-grid truthful-tool-grid">
+            <button className="tool-card drama-feature" onClick={() => onStartCreation("上传剧本")}><span className="tool-icon tool-drama">▣</span><div><div className="mini-tag">核心主线</div><h3>短剧 Agent</h3><p>从想法或剧本开始，进入资产、分集、片段和成片流程</p></div><b>↗</b></button>
+            <button className="tool-card canvas-feature" onClick={() => onStartCreation("自由画布")}><span className="tool-icon tool-canvas">⌘</span><div><h3>自由画布</h3><p>创建画布项目，直接组织角色、场景、文本、图片、音频和视频节点</p></div><b>↗</b></button>
           </div>
         </section>
       </div>
-      {toast && <div className="toast">演示模式：创作任务已准备好</div>}
     </StudioShell>
   );
 }

@@ -1,0 +1,37 @@
+{
+  "1": {
+    "inputs": {
+      "model_path": "s2-pro",
+      "text": "你好，这是 Fish Audio S2 的中文语音测试。",
+      "language": "auto",
+      "device": "auto",
+      "precision": "auto",
+      "attention": "auto",
+      "max_new_tokens": 0,
+      "chunk_length": 200,
+      "temperature": 0.7,
+      "top_p": 0.7,
+      "repetition_penalty": 1.2,
+      "seed": 42,
+      "keep_model_loaded": true,
+      "offload_to_cpu": false,
+      "compile_model": false
+    },
+    "class_type": "FishS2TTS",
+    "_meta": {
+      "title": "角色台词 text"
+    }
+  },
+  "2": {
+    "inputs": {
+      "audio": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "PreviewAudio",
+    "_meta": {
+      "title": "输出 audio"
+    }
+  }
+}

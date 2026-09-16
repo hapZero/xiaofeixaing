@@ -1,5 +1,7 @@
 import type { ProjectSourceType, ProjectStatus, WorkflowCapability } from "@xiaofeixiang/contracts";
 
+export * from "./production.js";
+
 export interface Project {
   id: string;
   ownerId: string;
@@ -9,6 +11,7 @@ export interface Project {
   stylePreset: string;
   aspectRatio: string;
   synopsis: string | null;
+  sourceText: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

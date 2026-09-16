@@ -4,6 +4,7 @@ import { audioPresets } from "../../../../../../db/schema";
 import { errorResponse, json, readJson } from "../../../../../lib/server/http";
 import { getOwnedProject } from "../../../../../lib/server/project-access";
 import { getRequestUser } from "../../../../../lib/server/request-user";
+import { invalidateEnvironmentPresetSound } from "../../../../../lib/server/sound-invalidation";
 
 type RouteContext = { params: Promise<{ projectId: string; presetId: string }> };
 type UpdatePresetBody = Partial<{ name: string; description: string; locked: boolean }>;
@@ -18,11 +19,16 @@ export async function PATCH(request: Request, context: RouteContext) {
 
   const existing = await getDb().select().from(audioPresets).where(and(eq(audioPresets.id, presetId), eq(audioPresets.projectId, projectId))).limit(1);
   if (!existing[0]) return errorResponse(404, "AUDIO_PRESET_NOT_FOUND", "声音场预设不存在或无权访问");
-  const update: UpdatePresetBody & { updatedAt: Date } = { updatedAt: new Date() };
+  const updatedAt = new Date();
+  const update: UpdatePresetBody & { assetId?: null; updatedAt: Date } = { updatedAt };
   if (typeof body.name === "string" && body.name.trim()) update.name = body.name.trim().slice(0, 120);
-  if (typeof body.description === "string") update.description = body.description.trim().slice(0, 2_000);
+  const nextDescription = typeof body.description === "string" ? body.description.trim().slice(0, 2_000) : existing[0].description;
+  const soundChanged = nextDescription !== existing[0].description;
+  if (typeof body.description === "string") update.description = nextDescription ?? "";
+  if (soundChanged) update.assetId = null;
   if (typeof body.locked === "boolean") update.locked = body.locked;
   await getDb().update(audioPresets).set(update).where(and(eq(audioPresets.id, presetId), eq(audioPresets.projectId, projectId)));
+  if (soundChanged) await invalidateEnvironmentPresetSound(projectId, presetId, updatedAt);
   const saved = await getDb().select().from(audioPresets).where(eq(audioPresets.id, presetId)).limit(1);
   return json({ preset: saved[0] });
 }
